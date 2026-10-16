@@ -1,0 +1,294 @@
+---
+title: "CSCM Simulation Job Files: YAML Configuration Reference"
+sidebarTitle: "Job Files"
+description: "Define CSCM simulation jobs in YAML files — configure start positions, swimmer profiles, headings, duration, tide detection, output paths, labels, colors, and email dispatch."
+---
+
+Simulation jobs are defined as YAML files placed in `./data/simulation/` (or a custom directory passed to the CLI via `--job-dir`). When the simulator runs, it discovers every `.yml` and `.yaml` file in that directory, parses each one with `parse_job_file()` into a `JobConfig` dataclass, evaluates activation conditions, and executes the qualifying jobs. This declarative approach means you can maintain a library of recurring swim scenarios — different start locations, headings, or time windows — and simply toggle them on and off without touching code.
+
+---
+
+## Complete annotated example
+
+```yaml
+title: My Planned swim in October 2027
+tz: Europe/Brussels    # Local timezone for visuals and this file
+
+active:
+  if-on: true          # Set to false to skip this job without deleting it
+  if-now-in-range:     # Only run when the current date is within this range
+    begin: 2027-10-04
+    end: 2027-10-11
+
+date:
+  range: 0d, 1d, 2d    # Run for today (0d), tomorrow (1d), day after tomorrow (2d)
+
+calc:
+  - id: "{date}-myname-{time}-pec"
+    from: KOKSIJDE     # Must be a key from wellknown POSITIONS
+    by: MBL_MIDR       # Must be a key from wellknown SWIMMERS
+    bearing: 333       # True North heading in degrees
+    duration: 6h
+    time:
+      detect:
+        types: pec     # pec = Peak Ebb Current, pfc = Peak Flood Current
+        in-range: 05:00-17:00   # Only consider start times in this window
+
+extra:
+  qotd: ./data/simulation/qotd.yml
+  obstructions: ./data/simulation/obstructions.wkt.csv
+  coastline: ./data/simulation/coastline.wkt.csv
+
+results:
+  folder: /tmp/results/2027-09-koksijde/{now}/
+  labels:
+    ribs: deviationdistance    # Labels on rib lines: deviationdistance | deviationspeed
+    spine: bearing|duration|totaldistance
+  files:
+    overview: ./{date}-overview.png
+    gpx: ./{date}-{calc.id}.gpx
+  mail:
+    to: Marc Portier <marc.portier@gmail.com>
+    subject: Koksijde Test Results for {date}
+    template: ./data/simulation/email-template.html
+    attach: all
+```
+
+---
+
+## Field reference
+
+### Top-level fields
+
+<ParamField path="title" type="string" required>
+  Human-readable job title. Used as the email subject prefix and as the title text in overview plots.
+
+  ```yaml
+  title: Koksijde October 2027 Training Swim
+  ```
+</ParamField>
+
+<ParamField path="tz" type="string" default="Europe/Brussels">
+  IANA timezone identifier for all local-time display, including plot labels, email timestamps, and the `in-range` time window comparison. Any valid `zoneinfo` key is accepted.
+
+  ```yaml
+  tz: Europe/London
+  ```
+</ParamField>
+
+---
+
+### active block
+
+<ParamField path="active.if-on" type="boolean" default="true">
+  Master switch for the job. Set to `false` to disable the job entirely without removing the file. Useful during off-season or when a job is under construction.
+
+  ```yaml
+  active:
+    if-on: false
+  ```
+</ParamField>
+
+<ParamField path="active.if-now-in-range.begin" type="date">
+  Start date (inclusive) of the activation window in `YYYY-MM-DD` format. When both `begin` and `end` are set the job only executes when today's date falls within that range.
+</ParamField>
+
+<ParamField path="active.if-now-in-range.end" type="date">
+  End date (inclusive) of the activation window in `YYYY-MM-DD` format. Pair with `begin` to gate a production job to its relevant preparation period.
+
+  ```yaml
+  active:
+    if-now-in-range:
+      begin: 2027-10-04
+      end: 2027-10-11
+  ```
+</ParamField>
+
+---
+
+### date block
+
+<ParamField path="date.range" type="string" default="1d,+5d">
+  Comma-separated list of day offsets relative to the current run date, controlling which calendar days receive simulations. Each token is an integer followed by `d` (e.g. `0d` for today, `1d` for tomorrow, up to `6d` for six days ahead). A fixed ISO date (e.g. `2027-10-07`) may also be used in place of an offset token.
+
+  ```yaml
+  date:
+    range: 0d, 1d, 2d   # Today, tomorrow, and the day after
+  ```
+</ParamField>
+
+---
+
+### calc block
+
+The `calc` key holds a list of calculation configurations. Each entry defines one simulated trajectory type (a heading + a tide type). Multiple entries in the list produce multiple trajectory overlays on the same daily overview map.
+
+<ParamField path="calc[].id" type="string" required>
+  Unique identifier for this calculation, used as a token in output file name templates. Supports `{date}` (simulation date as `YYYY-MM-DD`) and `{time}` (detected start time as `HHMM`) substitution tokens.
+
+  ```yaml
+  id: "{date}-koksijde-{time}-pec"
+  ```
+</ParamField>
+
+<ParamField path="calc[].from" type="string" required>
+  Key of a wellknown position defined in `cscm/wellknown.py` (e.g. `KOKSIJDE`, `NIEUWPOORT`, `DOVER`). The simulator snaps this position to the nearest open-water grid cell in the CMEMS dataset before running tide detection and trajectory integration.
+</ParamField>
+
+<ParamField path="calc[].by" type="string">
+  Key of a wellknown swimmer profile defined in `cscm/wellknown.py` (e.g. `MBL_MIDR`). Reserved for future swimmer-speed profile integration; currently the simulation engine uses a fixed intrinsic speed of 1.0 m/s regardless of this value.
+</ParamField>
+
+<ParamField path="calc[].bearing" type="float" required>
+  Constant heading in degrees True North that the swimmer maintains throughout the simulation. `0` = due North, `90` = due East, `180` = due South, `270` = due West. Values between 0 and 360 are accepted.
+
+  ```yaml
+  bearing: 333
+  ```
+</ParamField>
+
+<ParamField path="calc[].duration" type="string" required>
+  Duration of the simulated swim as a string with an `h` suffix (e.g. `6h`, `7.5h`). Parsed to a float number of hours internally.
+
+  ```yaml
+  duration: 6h
+  ```
+</ParamField>
+
+<ParamField path="calc[].time.detect.types" type="string">
+  Which tidal current peaks to use as candidate start times. Accepted values:
+  - `pec` — Peak Ebb Current (current flowing predominantly westward / away from shore on the Belgian coast)
+  - `pfc` — Peak Flood Current (current flowing predominantly eastward)
+  - `pec, pfc` — detect both types (comma-separated)
+
+  ```yaml
+  time:
+    detect:
+      types: pec
+  ```
+</ParamField>
+
+<ParamField path="calc[].time.detect.in-range" type="string">
+  Local-time window within which a detected tide peak must fall to be accepted as a valid start time. Format is `HH:MM-HH:MM` in the timezone specified by `tz`. Peaks outside this window are silently discarded.
+
+  ```yaml
+  time:
+    detect:
+      types: pec
+      in-range: 05:00-17:00
+  ```
+
+  <Note>
+    YAML 1.1 parsers may silently parse bare time strings like `05:00` as sexagesimal integers. CSCM's `parse_job_file()` handles this edge case automatically, converting any integer back to a `HH:MM` string.
+  </Note>
+</ParamField>
+
+---
+
+### results block
+
+<ParamField path="results.folder" type="string">
+  Output directory template for all files generated by this job. Supports the `{now}` placeholder (replaced with the script run timestamp as `YYYYMMDD_HHMMSS`). The directory is created automatically if it does not exist.
+
+  ```yaml
+  results:
+    folder: /tmp/results/koksijde/{now}/
+  ```
+</ParamField>
+
+<ParamField path="results.labels.ribs" type="string" default="deviationspeed">
+  Controls the label displayed at the tip of each 15-minute current rib vector on the fishbone map. Options:
+  - `deviationdistance` — displacement in metres over 15 minutes (e.g. `840m`)
+  - `deviationspeed` — current speed in m/s (e.g. `0.93`)
+</ParamField>
+
+<ParamField path="results.labels.spine" type="string" default="bearing|duration|totaldistance">
+  `|`-separated list of attributes to display as a rotated text label along the intended-course backbone line. Recognised tokens: `bearing` (heading degrees), `duration` (swim hours), `totaldistance` (21.6 km at 1 m/s), `speed`, `type`, `ribdistance`.
+
+  ```yaml
+  labels:
+    ribs: deviationdistance
+    spine: bearing|duration|totaldistance
+  ```
+</ParamField>
+
+<ParamField path="results.files.overview" type="string">
+  Filename template for the daily overview PNG. Supports `{date}` (simulation date as `YYYY-MM-DD`). Path is relative to `results.folder`.
+
+  ```yaml
+  files:
+    overview: ./{date}-overview.png
+  ```
+</ParamField>
+
+<ParamField path="results.files.gpx" type="string">
+  Filename template for each trajectory GPX file. Supports `{date}` and `{calc.id}` substitution tokens. Path is relative to `results.folder`.
+
+  ```yaml
+  files:
+    gpx: ./{date}-{calc.id}.gpx
+  ```
+</ParamField>
+
+<ParamField path="results.mail.to" type="string">
+  Recipient address(es) for the simulation report email. Accepts a single RFC 5322 address (e.g. `Name <email@example.com>`) or a comma-separated list for multiple recipients.
+</ParamField>
+
+<ParamField path="results.mail.subject" type="string">
+  Email subject line template. Supports `{date}` (simulation date) and `{now}` (run timestamp) substitution tokens.
+
+  ```yaml
+  subject: Koksijde Test Results for {date}
+  ```
+</ParamField>
+
+<ParamField path="results.mail.template" type="string">
+  Path to a Jinja2 HTML template for the email body. See the [Output Formats](/simulation/output-formats) page for the full list of template variables.
+</ParamField>
+
+<ParamField path="results.mail.attach" type="string" default="all">
+  Controls which files are attached to the outgoing email:
+  - `all` — overview PNG (CID-embedded) + all GPX files
+  - `overview` — overview PNG only (CID-embedded)
+  - `gpx` — all GPX files only (as binary attachments)
+  - `none` — send the HTML email body only, no attachments
+</ParamField>
+
+---
+
+## Auxiliary files
+
+Three optional supplementary files can be referenced under the `extra` block to enrich the map and email outputs.
+
+### obstructions.wkt.csv
+
+A CSV file listing polygon geometries of hazard areas (e.g. mussel farms, shipping lanes, restricted zones) that should be highlighted on the overview map. The expected columns are:
+
+```csv
+WKT,fid,name,description
+"MULTIPOLYGON ((( 2.61 51.12, 2.62 51.12, ... )))",1,Colruyt Mussel Farm,Avoid at all times
+```
+
+Obstruction polygons are rendered with a **pink hatched fill** (`#f33bfe`, 35% opacity) and a solid pink stroke, making them immediately visible against the water background.
+
+### coastline.wkt.csv
+
+A CSV of coastline polygon geometries used to draw a high-fidelity, smoothly filled land backdrop — typically more accurate than the coarse CMEMS grid-cell classification. Uses the same column layout as `obstructions.wkt.csv`:
+
+```csv
+WKT,fid,name,description
+"MULTIPOLYGON ((( 2.54 51.10, ... )))",1,Belgian Coast,Coastline polygon
+```
+
+Coastline polygons are rendered with a **sandy yellow fill** (`#f8f1b0`, 75% opacity) and a thin black stroke.
+
+### qotd.yml
+
+A YAML list of quote objects. One entry is selected at random each time a simulation report email is generated and injected into the email template as `{{ qotd_text }}` and `{{ qotd_author }}`.
+
+```yaml
+- txt: "The sea is only the embodiment of a supernatural and wonderful existence."
+  by: Jules Verne
+- txt: "Man cannot discover new oceans unless he has the courage to lose sight of the shore."
+  by: André Gide
+```

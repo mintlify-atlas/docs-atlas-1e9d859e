@@ -1,0 +1,181 @@
+---
+title: "Configure CSCM Environment Variables"
+sidebarTitle: "Configuration"
+description: "All CSCM environment variables for Copernicus Marine, MDK, geographic extent, and simulation data paths — read from a .env file or the shell environment."
+---
+
+CSCM reads all runtime configuration from environment variables, loaded via [python-dotenv](https://pypi.org/project/python-dotenv/) at startup. You can provide values in a `.env` file at the project root, or set them directly in your shell environment — both are treated identically. The repository ships a `.env.example` file that lists every available option with comments explaining each one.
+
+Create your local configuration file with:
+
+```bash
+cp .env.example .env
+```
+
+Then edit `.env` to supply your credentials and paths. The file is listed in `.gitignore` and should never be committed to version control.
+
+<Warning>
+  **Never commit credentials to git.** The `.env` file contains API passwords for both Copernicus Marine and MDK. If you accidentally expose credentials, rotate them immediately via the respective service portals.
+</Warning>
+
+---
+
+## Copernicus Marine Credentials
+
+These credentials authenticate CSCM's calls to the `copernicusmarine` Python client, which downloads 2D hydrodynamic current forecast data (dataset `cmems_mod_nws_phy-cur_anfc_1.5km-2D_PT15M-i`) from the Copernicus Marine Service.
+
+<Note>
+  Register for a free Copernicus Marine Service account at [marine.copernicus.eu](https://marine.copernicus.eu/). Access to the NW Shelf forecast dataset used by CSCM is included with the free tier.
+</Note>
+
+<ParamField body="COPERNICUSMARINE_SERVICE_USERNAME" type="string" required>
+  Your Copernicus Marine Service account username (typically your registration email address). Used by the `copernicusmarine` client for authentication.
+
+  ```bash
+  COPERNICUSMARINE_SERVICE_USERNAME=your.account@email.com
+  ```
+</ParamField>
+
+<ParamField body="COPERNICUSMARINE_SERVICE_PASSWORD" type="string" required>
+  Your Copernicus Marine Service account password. This is the same credential you use to log in at [data.marine.copernicus.eu](https://data.marine.copernicus.eu/).
+
+  ```bash
+  COPERNICUSMARINE_SERVICE_PASSWORD=***your*copernicus*marine*password***
+  ```
+</ParamField>
+
+<ParamField body="CMEMS_USERNAME" type="string">
+  Legacy alias for `COPERNICUSMARINE_SERVICE_USERNAME`. Recognised by some older CSCM utility scripts. Prefer `COPERNICUSMARINE_SERVICE_USERNAME` for new setups.
+</ParamField>
+
+<ParamField body="CMEMS_PASSWORD" type="string">
+  Legacy alias for `COPERNICUSMARINE_SERVICE_PASSWORD`. Recognised by some older CSCM utility scripts. Prefer `COPERNICUSMARINE_SERVICE_PASSWORD` for new setups.
+</ParamField>
+
+---
+
+## Data Storage
+
+<ParamField body="CMEMS_DATA_FOLDER" type="string">
+  Absolute or relative path to the local directory where downloaded CMEMS NetCDF files and their accompanying `_analysis.json` sidecar files are stored. CSCM creates the directory automatically if it does not exist.
+
+  **Default:** `./data_store/` relative to `src/cscm/current/cmems/retrieve.py` (i.e. inside the installed package directory).
+
+  For production use, set this to a well-defined path outside the package tree:
+
+  ```bash
+  CMEMS_DATA_FOLDER=/data/cscm/cmems
+  ```
+</ParamField>
+
+---
+
+## Date Range
+
+<ParamField body="CMEMS_START_DATE" type="string">
+  ISO 8601 date string (`YYYY-MM-DD`) controlling the earliest lunar cycle that `CMEMSDataManager` will attempt to download. Downloads are partitioned into synodic months, so CSCM will fetch all new moon cycles that fall on or after this date.
+
+  **Default:** `2024-09-01` — the earliest date for which the NW Shelf 2D forecast dataset provides useful coverage for the Belgian coast.
+
+  ```bash
+  CMEMS_START_DATE=2024-09-01
+  ```
+</ParamField>
+
+<ParamField body="CMEMS_END_DATE" type="string">
+  ISO 8601 date string (`YYYY-MM-DD`) controlling the latest lunar cycle boundary that `CMEMSDataManager` will target. Because CMEMS forecast data extends approximately 6 days into the future, setting this beyond `now + 7 days` will result in partial downloads that are automatically refreshed on the next run.
+
+  **Default:** Today's date plus 35 days — chosen to ensure the next full new moon cycle is always captured even at the boundary of the forecast window.
+
+  ```bash
+  CMEMS_END_DATE=2027-10-31
+  ```
+</ParamField>
+
+---
+
+## Geographic Extent
+
+The geographic extent controls which spatial slice of the NW Shelf model grid is downloaded. Narrowing the extent to your area of interest dramatically reduces file sizes and download times.
+
+<ParamField body="CMEMS_GEO_EXTENT" type="string">
+  Comma-separated bounding box in the format `min_lon,max_lon,min_lat,max_lat` (WGS84 decimal degrees). This is passed directly to the `copernicusmarine.subset()` call as the `minimum_longitude`, `maximum_longitude`, `minimum_latitude`, and `maximum_latitude` parameters.
+
+  **Default:** `-180.0,180.0,-90.0,90.0` (global — downloads the full NW Shelf grid, which is very large).
+
+  ```bash
+  CMEMS_GEO_EXTENT=0.469393,3.571506,50.729498,52.578752
+  ```
+</ParamField>
+
+### Recommended North Sea Extent
+
+For a Belgian-to-English cross-channel route, restrict the download to the southern North Sea:
+
+```bash
+CMEMS_GEO_EXTENT=-3.0,4.5,49.5,52.5
+```
+
+This covers the coastline from the Strait of Dover to the Hook of Holland, and from northern France to the Thames Estuary — sufficient for route planning between Koksijde (BE) and Orford Ness / Kingsgate (UK). Compared to the global default, this extent reduces each lunar-cycle NetCDF file from several gigabytes to tens of megabytes and cuts analysis runtime proportionally.
+
+For even tighter North Sea production use, the extent used in `.env.example` narrows to the most likely crossing corridor:
+
+```bash
+CMEMS_GEO_EXTENT=0.469393,3.571506,50.729498,52.578752
+```
+
+<ParamField body="CMEMS_FOCAL_POSITIONS" type="string">
+  Comma-separated list of position keys from `wellknown.py` (e.g. `KOKSIJDE,BREDENE_POST4,W_1_2`) used to select which grid cells receive detailed diagnostic verification plots after PCA analysis. Use `*` or `all` to generate plots for every known position.
+
+  **Default:** All positions (`*`) when unset; the `.env.example` ships with `KOKSIJDE,BREDENE_POST4,W_1_2`.
+
+  ```bash
+  CMEMS_FOCAL_POSITIONS=KOKSIJDE,BREDENE_POST4,W_1_2
+  ```
+</ParamField>
+
+---
+
+## Meetnet Vlaamse Banken (MDK)
+
+MDK credentials are required for the water level and tide gauge API features, which use the `pywaterinfo` library to query real-time and historical water level observations from Flemish coastal monitoring stations.
+
+<ParamField body="MDK_USERNAME" type="string">
+  Your Meetnet Vlaamse Banken account username (email address). Register at [meetnetvlaamsebanken.be/Account/Register](https://meetnetvlaamsebanken.be/Account/Register).
+
+  ```bash
+  MDK_USERNAME=your.account@email.com
+  ```
+</ParamField>
+
+<ParamField body="MDK_PASSWORD" type="string">
+  Your Meetnet Vlaamse Banken account password.
+
+  ```bash
+  MDK_PASSWORD=***your*mdk*password***
+  ```
+</ParamField>
+
+---
+
+## Email Reporting (Optional)
+
+These variables are optional and only required if you use the automated email dispatch feature in the simulation pipeline.
+
+<ParamField body="SMTP_HOST" type="string">
+  Hostname of the SMTP server used to send simulation result emails. If not set, email dispatch is disabled.
+
+  **Default:** `localhost`
+
+  ```bash
+  SMTP_HOST=smtp.example.com
+  ```
+</ParamField>
+
+<ParamField body="SMTP_FROM" type="string">
+  The `From:` address used for outgoing simulation emails.
+
+  ```bash
+  SMTP_FROM=cscm@example.com
+  ```
+</ParamField>

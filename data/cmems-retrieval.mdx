@@ -1,0 +1,174 @@
+---
+title: "Download CMEMS Tidal Current Forecasts by Lunar Cycle"
+sidebarTitle: "CMEMS Retrieval"
+description: "CMEMSDataManager downloads 1.5 km / 15-minute Copernicus Marine current forecasts partitioned into lunar cycles with asymmetric tidal-lag margins and a local catalog."
+---
+
+CSCM downloads the CMEMS dataset `cmems_mod_nws_phy-cur_anfc_1.5km-2D_PT15M-i` — the Copernicus Marine North West Shelf Atlantic 2D surface current analysis and forecast at 1.5 km horizontal resolution and 15-minute temporal intervals. Files are organised by synodic month (new moon to new moon) rather than by calendar month, ensuring every download contains a complete Spring-Neap tidal cycle. A local JSON-sidecar catalog tracks each lunar-cycle file so that already-complete historic periods are never re-downloaded.
+
+<Warning>
+CMEMS downloads require valid Copernicus Marine credentials. Set `COPERNICUSMARINE_SERVICE_USERNAME` and `COPERNICUSMARINE_SERVICE_PASSWORD` in your environment (or in a `.env` file at the repository root) before running any retrieval. You can register for a free account at [data.marine.copernicus.eu](https://data.marine.copernicus.eu/register).
+</Warning>
+
+## CMEMSDataManager class
+
+`CMEMSDataManager` is the central class for managing the CMEMS local data store. It maintains an in-memory `catalog` DataFrame that mirrors every JSON metadata sidecar found in the storage folder.
+
+```python
+from cscm.current.cmems.retrieve import CMEMSDataManager
+```
+
+### `__init__(*, storage_folder=None)`
+
+Initialises the manager and calls `init_catalog()` to load any existing metadata from disk.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `storage_folder` | `Path \| None` | `None` | Override the storage directory. When `None`, the value of the `CMEMS_DATA_FOLDER` environment variable is used; if that is also unset, the default is `./data_store/` relative to the `retrieve.py` module. The directory is created automatically if it does not exist. |
+
+The manager also reads `CMEMS_GEO_EXTENT` from the environment at construction time to determine the geographic bounding box that will be applied to every subsequent download.
+
+---
+
+### `update_cmems_data(start_date, end_date, force=False, limit=None) -> bool`
+
+Checks the local catalog and downloads any missing or stale lunar-cycle files for the given date range.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `start_date` | `datetime \| None` | `None` | Earliest new moon to consider. When `None`, uses `CMEMS_START_DATE` env var, or `2024-09-01` as the built-in default. |
+| `end_date` | `datetime \| None` | `None` | Latest new moon boundary to consider. When `None`, uses `CMEMS_END_DATE` env var, or `now + 35 days` to safely reach the next new moon. |
+| `force` | `bool` | `False` | Re-download every cycle in range, even those already marked `historic_complete`. |
+| `limit` | `int \| None` | `None` | Restrict retrieval to the *N* most recent lunar cycles in the requested range. Useful for quickly refreshing only the latest forecast without touching older archive files. |
+
+Returns `True` if every requested cycle succeeded (or was already up-to-date), `False` if any download encountered an error. Failed cycles log an error but do not raise — any pre-existing cached file for that cycle is preserved.
+
+---
+
+### `add_cmems_data_to_catalog(mc: Mooncycle) -> dict`
+
+Downloads the CMEMS NetCDF for a single lunar cycle and registers it in the catalog. You rarely need to call this directly — `update_cmems_data()` calls it automatically for each missing cycle.
+
+The method:
+
+1. **Calculates asymmetric date boundaries** — 2 days before the cycle's new moon start date and 5 days after the *next* new moon date (see [Download boundaries](#download-boundaries) below), rounded to whole UTC days.
+2. **Caps the end date** at `now + 6 days` because Copernicus Marine only guarantees a 7-day forecast horizon; the one-day safety margin prevents accidental boundary requests.
+3. **Downloads with retry logic** — up to 3 attempts with exponential backoff (10 s, 20 s, 30 s between retries). The file is first written to a `.staging/` sub-folder with `overwrite=True`, then atomically moved to the main storage folder on success.
+4. **Writes a JSON metadata sidecar** alongside the `.nc` file (same stem, `.json` extension).
+5. **Appends the metadata** to the in-memory `catalog` DataFrame.
+
+Returns the metadata `dict` that was written to disk. Raises `RuntimeError` after all retries are exhausted.
+
+---
+
+### `init_catalog()`
+
+Scans the storage folder for `*.json` files (excluding `*_analysis.json` produced by the analysis pipeline) and rebuilds the in-memory `catalog` DataFrame from scratch. Automatically called by `__init__()` and after a forced cleanup. Call it manually if you have added or removed metadata files on disk outside of CSCM.
+
+---
+
+## Catalog schema
+
+The `catalog` attribute is a `pd.DataFrame` with the following columns:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `data_start_dt` | `str` (ISO 8601) | Actual start timestamp of the downloaded data as reported by the CMEMS API. |
+| `data_end_dt` | `str` (ISO 8601) | Actual end timestamp of the downloaded data. |
+| `nwmn_start_dt` | `str` (ISO 8601) | Astronomical new moon that opens this lunar cycle. |
+| `nwmn_end_dt` | `str` (ISO 8601) | Astronomical new moon that closes this lunar cycle (start of the *next* cycle). |
+| `lunarperiod_d` | `float` | Length of this synodic month in fractional days (typically ~29.53). |
+| `tidalperiod_h` | `float` | Semi-diurnal tidal period for this cycle in hours (typically ~12.42). |
+| `metadata_file` | `str` | Absolute path to the JSON metadata sidecar file on disk. |
+| `data_file` | `str` | Absolute path to the NetCDF (`.nc`) data file on disk. |
+| `data_size` | `int` | File size of the NetCDF in bytes as reported by the CMEMS download response. |
+| `data_variables` | `str` | Comma-separated list of downloaded variable names (e.g. `"uo, vo"`). |
+| `data_geo_extent` | `str` | Comma-separated actual bounding box returned by CMEMS: `min_lon, max_lon, min_lat, max_lat`. |
+| `data_status` | `str` | Download status string returned by the Copernicus Marine client. |
+| `historic_complete` | `bool` | `True` if the cycle is fully in the past and will never need a forecast refresh (see below). |
+
+---
+
+## Download boundaries
+
+Each lunar-cycle download uses an **asymmetric margin** around the new moon pair:
+
+- **Leading margin — 2 days before** the cycle's opening new moon. This ensures the dataset captures the waning Spring tide that immediately precedes the new moon.
+- **Trailing margin — 5 days after** the *next* new moon (the one that ends the cycle). The extra three days beyond the symmetric two-day margin accommodate the **tidal age lag**: the Spring tide peak in the Southern North Sea typically lags the new/full moon by 1–2 days, and the 5-day buffer guarantees the post-new-moon Spring peak is always included in the analysis window.
+
+Both boundaries are rounded to the start of a whole UTC day before being sent to the CMEMS API.
+
+### `historic_complete` flag
+
+A cycle row is marked `historic_complete = True` when **either** of the following conditions is met:
+
+- All timestamps in the downloaded data are in the past (no forecast component remains).
+- `now >= nwmn_end_dt` **and** the downloaded data already covers the full trailing 5-day margin — meaning the cycle has been captured in its entirety and no future forecast update can add new data.
+
+When `historic_complete` is `True`, `update_cmems_data()` skips the cycle entirely unless `force=True` is passed. This prevents redundant multi-gigabyte re-downloads of historical archive files on every scheduled run.
+
+---
+
+## CLI usage
+
+The `cscm.current.cmems` module can be run directly to download and analyse the full CMEMS datastore. The CLI automatically loads `.env` from the project root.
+
+```bash
+# Download and update the full CMEMS datastore, then run tidal analysis
+poetry run python -m cscm.current.cmems
+
+# Refresh only the 2 most recent lunar cycles
+poetry run python -m cscm.current.cmems --limit 2
+
+# Skip the download step and only (re-)run analysis
+poetry run python -m cscm.current.cmems --skip-update
+
+# Force full re-analysis, ignoring cached _analysis.json files
+poetry run python -m cscm.current.cmems --force
+
+# Clean all derived files before re-running (keeps raw .nc and metadata)
+poetry run python -m cscm.current.cmems --clean analysis
+
+# Clean everything and start from scratch
+poetry run python -m cscm.current.cmems --clean all
+```
+
+---
+
+## Programmatic usage
+
+```python
+from cscm.current.cmems.retrieve import CMEMSDataManager
+
+manager = CMEMSDataManager()
+# Download only the 2 most recent lunar cycles
+success = manager.update_cmems_data(limit=2)
+print(f"Catalog has {len(manager.catalog)} entries")
+```
+
+To target a specific historic date range:
+
+```python
+from datetime import datetime, timezone
+from cscm.current.cmems.retrieve import CMEMSDataManager
+
+manager = CMEMSDataManager()
+success = manager.update_cmems_data(
+    start_date=datetime(2025, 1, 1, tzinfo=timezone.utc),
+    end_date=datetime(2025, 3, 31, tzinfo=timezone.utc),
+)
+if not success:
+    print("One or more cycles failed — check cscm.log for details")
+
+# Inspect the catalog
+print(manager.catalog[["nwmn_start_dt", "data_file", "historic_complete"]])
+```
+
+<Tip>
+Set `CMEMS_GEO_EXTENT` in your `.env` file to restrict the geographic bounding box before downloading. Limiting the area to the Southern North Sea (e.g. `0.47,3.57,50.73,52.58`) reduces each NetCDF file size dramatically compared to a global or full-shelf download.
+
+```ini
+# .env
+CMEMS_GEO_EXTENT=0.469393,3.571506,50.729498,52.578752
+```
+</Tip>

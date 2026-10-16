@@ -1,0 +1,458 @@
+---
+title: "cscm.current API Reference: CMEMS Data and Forecast Models"
+sidebarTitle: "cscm.current"
+description: "API reference for CMEMSDataManager, CmemsForecastCurrentsModel, and analysis functions including process_nc_file, calculate_grid_principal_angles, and analyse_grid_cell."
+---
+
+`cscm.current` contains two sub-packages that together cover the full lifecycle of Copernicus Marine Service (CMEMS) ocean current data. `cscm.current.cmems` handles data retrieval from the CMEMS API and tidal analysis of the downloaded NetCDF files. `cscm.current.current_model` provides `CurrentsModel` implementations: a configurable `UniformCurrentsModel` stub for pipeline testing, and planned classes (`CmemsActualsCurrentModel`, `CmemsAverageCurrentsModel`) for live and climatological CMEMS data feeds.
+
+---
+
+## cscm.current.cmems — Data retrieval and analysis
+
+### CMEMSDataManager
+
+```python
+class CMEMSDataManager:
+    def __init__(self, *, storage_folder: Path = None)
+```
+
+Manages the download, local storage, and cataloguing of CMEMS current-vector NetCDF files organised by lunar cycle. The manager maintains an internal `catalog` DataFrame that maps each downloaded file to its moon-cycle metadata, skipping re-downloads for cycles that are already historically complete.
+
+The storage folder and geographic/temporal bounds can be configured via environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CMEMS_DATA_FOLDER` | `./data_store/` next to `retrieve.py` | Path to local NetCDF storage |
+| `CMEMS_START_DATE` | `2024-09-01` | Earliest date for data retrieval |
+| `CMEMS_END_DATE` | `now + 35 days` | Latest date for data retrieval |
+| `CMEMS_GEO_EXTENT` | `"-180.0,180.0,-90.0,90.0"` | `"min_lon,max_lon,min_lat,max_lat"` |
+
+#### Constructor
+
+<ParamField path="storage_folder" type="Path">
+  Override the local folder where NetCDF and metadata JSON files are stored. If `None`, falls back to the `CMEMS_DATA_FOLDER` environment variable or `./data_store/` relative to the module file.
+</ParamField>
+
+---
+
+#### `init_catalog()`
+
+```python
+def init_catalog() -> None
+```
+
+Scans `storage_folder` for `*.json` metadata files (excluding `*_analysis.json` output files) and reconstructs the internal `self.catalog` DataFrame. Called automatically by `__init__`; call again to refresh after external file changes.
+
+**Catalog columns:**
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `data_start_dt` | str (ISO) | Actual start datetime of the downloaded data |
+| `data_end_dt` | str (ISO) | Actual end datetime of the downloaded data |
+| `nwmn_start_dt` | str (ISO) | New-moon cycle start datetime |
+| `nwmn_end_dt` | str (ISO) | New-moon cycle end datetime |
+| `lunarperiod_d` | float | Lunar cycle duration in solar days |
+| `tidalperiod_h` | float | Derived semi-diurnal tidal period in hours |
+| `metadata_file` | str | Path to the companion JSON metadata file |
+| `data_file` | str | Path to the NetCDF data file |
+| `data_size` | int | File size in bytes |
+| `data_variables` | str | Comma-separated variable names (e.g. `"uo, vo"`) |
+| `data_geo_extent` | str | Actual downloaded geographic extent |
+| `data_status` | str | CMEMS download status string |
+| `historic_complete` | bool | `True` if the cycle is fully in the past and will not be re-downloaded |
+
+---
+
+#### `add_cmems_data_to_catalog()`
+
+```python
+def add_cmems_data_to_catalog(mc: Mooncycle) -> dict
+```
+
+Downloads CMEMS data for the given moon cycle and appends a new row to `self.catalog`. The download time range is extended by **−2 days** before the new moon and **+5 days** after the next new moon to capture the full spring/neap tidal envelope plus the tidal age lag. The upper bound is hard-capped at `now + 6 days` (the reliable CMEMS forecast horizon).
+
+<ParamField path="mc" type="Mooncycle" required>
+  A `(start_dt, end_dt, lunarperiod_d, tidalperiod_h)` tuple as returned by `get_newmoon_cycles()`.
+</ParamField>
+
+**Returns:** the metadata `dict` that was written to disk and added to the catalog.
+
+---
+
+#### `update_cmems_data()`
+
+```python
+def update_cmems_data(
+    start_date: datetime = None,
+    end_date: datetime = None,
+    force: bool = False,
+    limit: int = None,
+) -> bool
+```
+
+High-level entry point for keeping local data up-to-date. Computes all lunar cycles in `[start_date, end_date]`, checks the catalog for existing entries, and downloads only what is missing or incomplete (unless `force=True`).
+
+<ParamField path="start_date" type="datetime">
+  First date of the retrieval window. Defaults to `CMEMS_START_DATE` environment variable or `2024-09-01`.
+</ParamField>
+
+<ParamField path="end_date" type="datetime">
+  Last date of the retrieval window. Defaults to `CMEMS_END_DATE` or `now + 35 days`.
+</ParamField>
+
+<ParamField path="force" type="bool">
+  If `True`, re-downloads every cycle in the window even if `historic_complete` is `True`. Defaults to `False`.
+</ParamField>
+
+<ParamField path="limit" type="int">
+  If set, restricts the download to the most recent `N` moon cycles in the requested range. Useful for lightweight updates that only refresh the forecast window.
+</ParamField>
+
+**Returns:** `True` if all requested updates succeeded; `False` if at least one cycle failed. Failed cycles retain their existing cached file.
+
+---
+
+### process_nc_file()
+
+```python
+def process_nc_file(
+    nc_path: Path,
+    nwmn_start_dt: datetime,
+    nwmn_end_dt: datetime,
+    lunarperiod_d: float,
+    tidalperiod_h: float,
+    geom_to_filter: BaseGeometry = None,
+    force_recalculate: bool = False,
+    focal_positions: list[Position] = None,
+) -> Path
+```
+
+The main analysis entry point. Processes a single CMEMS NetCDF file through the full tidal analysis pipeline:
+
+1. Verifies grid metadata (cell size, time step, bounding box).
+2. Classifies each grid cell as Land (0), Boundary (1), or Water (2).
+3. Generates companion GeoJSON and GPX visualisation files for the grid.
+4. Computes the principal tidal flow angle for every grid cell using vectorised PCA (`calculate_grid_principal_angles`).
+5. Analyses every water/boundary cell within `geom_to_filter` (or the entire grid if `None`) to extract spring and neap peaks, tidal calibration anchors, and principal-axis amplitudes.
+6. Writes a compact `*_analysis.json` file alongside the NetCDF.
+7. Optionally renders a verification plot for each position in `focal_positions`.
+
+Results are cached: if `*_analysis.json` is newer than both the NetCDF and its metadata JSON, processing is skipped unless `force_recalculate=True`.
+
+<ParamField path="nc_path" type="Path" required>
+  Path to the CMEMS NetCDF file (containing variables `uo` and `vo`).
+</ParamField>
+
+<ParamField path="nwmn_start_dt" type="datetime" required>
+  New-moon datetime (UTC) marking the start of this lunar cycle.
+</ParamField>
+
+<ParamField path="nwmn_end_dt" type="datetime" required>
+  New-moon datetime (UTC) marking the end of this lunar cycle.
+</ParamField>
+
+<ParamField path="lunarperiod_d" type="float" required>
+  Duration of the lunar cycle in solar days.
+</ParamField>
+
+<ParamField path="tidalperiod_h" type="float" required>
+  Semi-diurnal tidal period in hours, derived from the lunar cycle.
+</ParamField>
+
+<ParamField path="geom_to_filter" type="BaseGeometry">
+  A Shapely geometry. Only grid cells whose centroid lies inside this geometry are analysed. Pass `None` to analyse all cells.
+</ParamField>
+
+<ParamField path="force_recalculate" type="bool">
+  If `True`, re-runs the full analysis even if a current `*_analysis.json` exists. Defaults to `False`.
+</ParamField>
+
+<ParamField path="focal_positions" type="list[Position]">
+  Optional list of `Position` objects for which verification plots are generated. Each plot is saved as `{nc_stem}_verify_cell_{label}.png` next to the NetCDF. Boundary cells are excluded from the nearest-neighbour lookup to avoid shoreline distortion.
+</ParamField>
+
+**Returns:** `Path` to the generated `*_analysis.json` file.
+
+---
+
+### process_catalog()
+
+```python
+def process_catalog(
+    catalog: pd.DataFrame,
+    *,
+    geom_to_filter: BaseGeometry = None,
+    force_recalculate: bool = False,
+    focal_positions: list[Position] = None,
+) -> None
+```
+
+Convenience batch processor. Iterates over every row in `catalog` (sorted newest-first so the most recent data finishes first on interruption) and calls `process_nc_file()` with the per-row astronomical parameters.
+
+<ParamField path="catalog" type="pd.DataFrame" required>
+  A `CMEMSDataManager.catalog` DataFrame or any compatible DataFrame with the expected columns (see `init_catalog` column table above).
+</ParamField>
+
+<ParamField path="geom_to_filter" type="BaseGeometry">
+  Shapely geometry forwarded to each `process_nc_file()` call.
+</ParamField>
+
+<ParamField path="force_recalculate" type="bool">
+  Forwarded to each `process_nc_file()` call.
+</ParamField>
+
+<ParamField path="focal_positions" type="list[Position]">
+  Forwarded to each `process_nc_file()` call.
+</ParamField>
+
+---
+
+### calculate_grid_principal_angles()
+
+```python
+def calculate_grid_principal_angles(ds: xr.Dataset) -> np.ndarray
+```
+
+Computes the principal tidal flow direction in radians for every grid cell using a vectorised covariance PCA. The angle represents the major axis of the tidal ellipse at that cell (the direction of maximum variance in the current-vector time series).
+
+The result is aligned so that the Flood direction (Vloed) has a positive Eastward component. If the flow is purely North–South, the positive Northward direction is used.
+
+<ParamField path="ds" type="xr.Dataset" required>
+  An `xarray.Dataset` with variables `uo` (eastward current, shape `[time, lat, lon]`) and `vo` (northward current, same shape).
+</ParamField>
+
+**Returns:** `np.ndarray` — 2D array of shape `[n_lat, n_lon]` containing principal flow angles in radians in the range `[0, 2π)`.
+
+---
+
+### classify_grid_cells()
+
+```python
+def classify_grid_cells(ds: xr.Dataset) -> tuple[np.ndarray, np.ndarray]
+```
+
+Labels each grid cell as Land, Boundary, or Water based on the time series of `uo`.
+
+- **Land (0):** all time steps are `NaN` or `0.0`.
+- **Boundary (1):** a water cell with at least one land cell among its 8 neighbours (diagonals included). Out-of-bounds edges are also treated as boundary limits.
+- **Water (2):** a water cell with no adjacent land cells.
+
+<ParamField path="ds" type="xr.Dataset" required>
+  Dataset with variable `uo` of shape `[time, lat, lon]`.
+</ParamField>
+
+**Returns:** `tuple[np.ndarray, np.ndarray]`
+- `status_mask` — 2D integer array (`0`=Land, `1`=Boundary, `2`=Water).
+- `is_boundary_mask` — 2D boolean array (`True` where `status_mask == 1`).
+
+---
+
+### analyse_grid_cell()
+
+```python
+def analyse_grid_cell(
+    ds: xr.Dataset,
+    y_idx: int,
+    x_idx: int,
+    principal_angle_rad: float,
+    nwmn_start_dt: datetime,
+    nwmn_end_dt: datetime,
+    lunarperiod_d: float,
+    tidalperiod_h: float,
+) -> dict
+```
+
+Performs the full tidal time-series analysis for a single grid cell. Projects the `(uo, vo)` time series onto the principal flow axis, detects slack-water zero crossings, extracts all half-cycle peaks, and returns the top-6 spring and bottom-6 neap peaks (by absolute amplitude) with their timing and lunar/tidal phase context.
+
+<ParamField path="ds" type="xr.Dataset" required>
+  Full CMEMS dataset.
+</ParamField>
+
+<ParamField path="y_idx" type="int" required>
+  Latitude grid index.
+</ParamField>
+
+<ParamField path="x_idx" type="int" required>
+  Longitude grid index.
+</ParamField>
+
+<ParamField path="principal_angle_rad" type="float" required>
+  Principal flow angle in radians for this cell (from `calculate_grid_principal_angles`).
+</ParamField>
+
+<ParamField path="nwmn_start_dt" type="datetime" required>
+  New-moon cycle start (UTC) for phase offset calculations.
+</ParamField>
+
+<ParamField path="nwmn_end_dt" type="datetime" required>
+  New-moon cycle end (UTC).
+</ParamField>
+
+<ParamField path="lunarperiod_d" type="float" required>
+  Lunar period in solar days.
+</ParamField>
+
+<ParamField path="tidalperiod_h" type="float" required>
+  Semi-diurnal tidal period in hours.
+</ParamField>
+
+**Returns:** `dict` with the following keys:
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `cell_id` | str | Unique identifier `"cell_{lat:.5f}_{lon:.5f}"` |
+| `latitude` | float | Cell centre latitude |
+| `longitude` | float | Cell centre longitude |
+| `grid_indices` | `[int, int]` | `[y_idx, x_idx]` |
+| `principal_flow_angle_deg` | float | Principal flow angle in degrees |
+| `principal_flow_angle_rad` | float | Principal flow angle in radians |
+| `max_peak_mps` | float | Strongest half-cycle amplitude (spring proxy) in m/s |
+| `min_peak_mps` | float | Weakest half-cycle amplitude (neap proxy) in m/s |
+| `spring_peaks` | list[dict] | Top-6 peaks by absolute amplitude, in chronological order |
+| `neap_peaks` | list[dict] | Bottom-6 peaks by absolute amplitude, in chronological order |
+
+Each peak dict contains: `peak_time`, `amplitude_mps`, `bearing_deg`, `lunar_phase_deg`, `nominal_tidal_phase_deg`, `dynamic_tidal_phase_deg`, `offset_days`.
+
+---
+
+### project_to_principal_axis()
+
+```python
+def project_to_principal_axis(
+    u: np.ndarray,
+    v: np.ndarray,
+    angle_rad: float,
+) -> tuple[np.ndarray, np.ndarray]
+```
+
+Rotates the `(u, v)` current vectors onto the principal tidal ellipse axes.
+
+<ParamField path="u" type="np.ndarray" required>
+  Eastward velocity component time series.
+</ParamField>
+
+<ParamField path="v" type="np.ndarray" required>
+  Northward velocity component time series.
+</ParamField>
+
+<ParamField path="angle_rad" type="float" required>
+  Principal flow angle in radians (from `calculate_grid_principal_angles`).
+</ParamField>
+
+**Returns:** `tuple[np.ndarray, np.ndarray]`
+- `v_parallel` — velocity along the principal (Flood) axis. Positive = Flood, negative = Ebb.
+- `v_perpendicular` — velocity perpendicular to the principal axis (minor tidal ellipse axis).
+
+---
+
+### find_zero_crossings()
+
+```python
+def find_zero_crossings(
+    times: np.ndarray,
+    values: np.ndarray,
+) -> list[dict]
+```
+
+Locates exact slack-water moments in a projected current time series using linear interpolation between consecutive samples that straddle zero.
+
+<ParamField path="times" type="np.ndarray" required>
+  Array of timestamps (NumPy datetime64 or similar).
+</ParamField>
+
+<ParamField path="values" type="np.ndarray" required>
+  Array of projected current speeds (e.g. `v_parallel` from `project_to_principal_axis`). Must be the same length as `times`.
+</ParamField>
+
+**Returns:** list of dicts, each with:
+- `time` — interpolated `Timestamp` of the zero crossing.
+- `index_pre` — integer index of the last sample before the crossing.
+- `direction` — `"neg_to_pos"` (Ebb→Flood slack) or `"pos_to_neg"` (Flood→Ebb slack).
+
+---
+
+## cscm.current.current_model
+
+### CmemsForecastCurrentsModel
+
+```python
+class CmemsForecastCurrentsModel:
+    def __init__(self, ds: xr.Dataset)
+```
+
+A live-data currents model that reads directly from an `xarray.Dataset` loaded from a CMEMS NetCDF forecast file. Provides bilinear spatio-temporal interpolation for any requested position and timestamp within the dataset's spatial and temporal bounding box.
+
+<Note>
+`CmemsForecastCurrentsModel` is defined in `cscm.simulation.predict` rather than `cscm.current`, reflecting its role as a simulation-time consumer of CMEMS data rather than a data-management component.
+</Note>
+
+<ParamField path="ds" type="xr.Dataset" required>
+  An `xarray.Dataset` containing `uo` (eastward current) and `vo` (northward current) variables with `time`, `latitude`/`lat`, and `longitude`/`lon` coordinates.
+</ParamField>
+
+#### `get_current_vector()`
+
+```python
+def get_current_vector(
+    position: Position,
+    moment: datetime,
+) -> tuple[float, float]
+```
+
+Trilinear interpolation (lat × lon × time) of the CMEMS grid to a precise point. Returns `(0.0, 0.0)` if the position or moment falls outside the dataset's bounding box, or if the interpolated value is `NaN` (near-land boundary artefact).
+
+<ParamField path="position" type="Position" required>
+  Geographic query point.
+</ParamField>
+
+<ParamField path="moment" type="datetime" required>
+  Query time (UTC). Timezone-aware datetimes are converted internally.
+</ParamField>
+
+**Returns:** `tuple[float, float]` — `(u_east_mps, v_north_mps)` in m/s.
+
+---
+
+### UniformCurrentsModel
+
+```python
+class UniformCurrentsModel(CurrentsModel):
+    def __init__(
+        self,
+        *,
+        direction_deg: float = 55.0,
+        v_peak_mps: float = 3.4,
+        tide_period_s: int = 6.21 * 60 * 60,   # ≈ 22 356 s
+        lunar_period_s: int = 57 * 6.21 * 60 * 60,
+        lunar_factor: float = 0.8,
+    )
+```
+
+A configurable stub `CurrentsModel` that models a spatially uniform tidal current following a sinusoidal speed envelope modulated by a lunar spring–neap cycle. The design intent is a fixed-direction current whose amplitude oscillates between a spring-tide peak and a reduced neap-tide peak.
+
+**All parameters are keyword-only.**
+
+<ParamField path="direction_deg" type="float">
+  Compass bearing of the current in degrees (0 = North, 90 = East). Defaults to `55.0°`.
+</ParamField>
+
+<ParamField path="v_peak_mps" type="float">
+  Spring-tide peak current speed in m/s. Defaults to `3.4`.
+</ParamField>
+
+<ParamField path="tide_period_s" type="int">
+  Semi-diurnal tidal period in seconds. Defaults to approximately 6.21 hours (22 356 s).
+</ParamField>
+
+<ParamField path="lunar_period_s" type="int">
+  Lunar spring–neap cycle duration in seconds. Defaults to 57 × 6.21 hours.
+</ParamField>
+
+<ParamField path="lunar_factor" type="float">
+  Ratio of neap-tide peak speed to spring-tide peak speed. Defaults to `0.8` (neap peak = 80% of spring peak).
+</ParamField>
+
+<Warning>
+`UniformCurrentsModel` is not yet implemented. `get_current()` currently returns a zero `SpeedVector` and `calibrate_time_phase()` is a pass-through. It is available as a structural placeholder for testing the simulation pipeline without a CMEMS data feed. See `BCH_UNIFORM` in `cscm.wellknown.CURRENT_MODELS`.
+</Warning>

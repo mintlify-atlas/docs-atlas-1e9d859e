@@ -1,0 +1,120 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "CSCM — Channel Swimmer Crossing Module",
+  "projectDescription": "A Python toolkit for tactical routing, tidal analysis, and trajectory optimization for ultra-distance open-water swimmers operating in the dynamic coastal currents of the North Sea.",
+  "theme": "luma",
+  "primaryColor": "#38bdf8",
+  "lightColor": "#05122a",
+  "darkColor": "#0485c8",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "configuration"
+            ]
+          },
+          {
+            "group": "Concepts",
+            "pages": [
+              "concepts/kinematics-model",
+              "concepts/tidal-analysis",
+              "concepts/moon-cycles"
+            ]
+          },
+          {
+            "group": "Data Sources",
+            "pages": [
+              "data/cmems-retrieval",
+              "data/cmems-analysis",
+              "data/tide-stations"
+            ]
+          },
+          {
+            "group": "Simulation",
+            "pages": [
+              "simulation/overview",
+              "simulation/job-files",
+              "simulation/running-simulations",
+              "simulation/output-formats"
+            ]
+          },
+          {
+            "group": "Reference",
+            "pages": [
+              "reference/wellknown",
+              "reference/api-model",
+              "reference/api-currents",
+              "reference/api-tide",
+              "reference/api-moon"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Trajectory simulation using vector addition of swimmer velocity and live CMEMS tidal currents",
+    "Adaptive per-cell Principal Component Analysis (PCA) to determine local tidal flow axes",
+    "Lunar-cycle-partitioned CMEMS data downloads with asymmetric tidal-lag margins",
+    "Automatic peak current detection (Peak Ebb Current / Peak Flood Current) for optimal start times",
+    "GPX track export and fishbone visualization plots for navigation planning",
+    "Moon phase and synodic cycle calculations via NASA JPL ephemeris (skyfield)",
+    "Water level forecasts via HIC KiWIS and MDK Meetnet Vlaamse Banken APIs",
+    "YAML-driven simulation job files with conditional activation, email reporting, and WKT obstruction overlays",
+    "Built-in wellknown positions (Koksijde, Dover, Kingsgate, Orford Ness) and swimmer profiles"
+  ],
+  "publicApiSurface": [
+    "cscm.model.SpeedVector",
+    "cscm.model.Position",
+    "cscm.model.LabeledPosition",
+    "cscm.model.Swimmer",
+    "cscm.model.MovingObject",
+    "cscm.model.CurrentsModel",
+    "cscm.model.EnvironmentModel",
+    "cscm.model.TrajectoryCalculator",
+    "cscm.model.TrajectoryFinder",
+    "cscm.model.TrajectoryResult",
+    "cscm.model.TimePhaseCalibration",
+    "cscm.wellknown.POSITIONS",
+    "cscm.wellknown.SWIMMERS",
+    "cscm.wellknown.CURRENT_MODELS",
+    "cscm.wellknown.constant()",
+    "cscm.wellknown.random_jitter()",
+    "cscm.moon.phases.get_phases()",
+    "cscm.moon.phases.get_newmoon_cycles()",
+    "cscm.current.cmems.retrieve.CMEMSDataManager",
+    "cscm.current.cmems.retrieve.CMEMSDataManager.update_cmems_data()",
+    "cscm.current.cmems.retrieve.CMEMSDataManager.add_cmems_data_to_catalog()",
+    "cscm.current.cmems.analyse.process_nc_file()",
+    "cscm.current.cmems.analyse.process_catalog()",
+    "cscm.current.cmems.analyse.calculate_grid_principal_angles()",
+    "cscm.current.cmems.analyse.analyse_grid_cell()",
+    "cscm.simulation.predict.CmemsForecastCurrentsModel",
+    "cscm.simulation.predict.simulate_test_swim()",
+    "cscm.simulation.predict.find_daily_tide_peaks()",
+    "cscm.simulation.predict.write_gpx_track()",
+    "cscm.simulation.predict.plot_daily_simulations()",
+    "cscm.simulation.jobs.parse_job_file()",
+    "cscm.simulation.jobs.JobConfig",
+    "cscm.tide.hic.HicClient",
+    "cscm.tide.hic.HicClient.get_water_levels()",
+    "cscm.tide.hic.HicClient.get_extremes()",
+    "cscm.tide.hic.HicClient.get_interpolated_curve()",
+    "cscm.tide.hic.HIC_COASTAL_STATIONS",
+    "cscm.tide.mdk.MdkClient",
+    "cscm.tide.mdk.MdkClient.get_water_levels()",
+    "cscm.tide.mdk.MdkClient.get_water_levels_pivot()",
+    "cscm.tide.mdk.MdkClient.get_data()",
+    "cscm.tide.mdk.MdkClient.get_current_data()",
+    "cscm.tide.mdk.COASTAL_TIDE_STATIONS",
+    "python -m cscm.current.cmems (CLI: download + analyse CMEMS data)",
+    "python -m cscm.simulation (CLI: run simulation jobs)",
+    "python -m cscm.simulation --skip-update (CLI: run simulations without downloading new data)"
+  ]
+}

@@ -1,0 +1,141 @@
+---
+title: "Tidal Current Analysis with Per-Cell PCA"
+sidebarTitle: "Tidal Analysis"
+description: "CSCM applies Principal Component Analysis to every grid cell in the CMEMS NetCDF dataset to automatically determine the local tidal flow axis and detect exact slack-water reversals."
+---
+
+North Sea tidal flows do not follow a single fixed axis. Bathymetric ridges, sandbanks, estuary mouths, and headlands each deflect the tidal ellipse differently — so the principal direction of flood current at one CMEMS grid cell may diverge by tens of degrees from the cell immediately adjacent. A single globally assumed axis introduces systematic errors that compound over a multi-hour trajectory. CSCM therefore runs a fully localized Principal Component Analysis (PCA) on the velocity time series of **every individual grid cell** in the downloaded NetCDF dataset. This produces a unique principal flow angle per cell, onto which the raw U/V current components are projected, enabling reliable slack-water detection and amplitude characterization across the entire crossing domain without any manual per-location tuning.
+
+The analysis is implemented in `src/cscm/current/cmems/analyse.py` and processes Copernicus Marine (CMEMS) 1.5 km, 15-minute resolution 2D hydrodynamic data.
+
+---
+
+## Principal Flow Axis (PCA)
+
+### `calculate_grid_principal_angles(ds: xr.Dataset) -> np.ndarray`
+
+Computes the principal tidal flow angle in radians for the **entire 2D grid in a single vectorised NumPy call**, covering all (lat, lon) cells simultaneously without any Python-level loop.
+
+**Algorithm:**
+
+1. Extract the full U (`uo`) and V (`vo`) arrays with shape `(time, lat, lon)`.
+2. Compute the time-mean of each component and subtract it to produce zero-mean anomalies `u_centered`, `v_centered`.
+3. Compute the three independent elements of the 2×2 covariance tensor across the time axis:
+   - `cuu = mean(u_centered²)`
+   - `cvv = mean(v_centered²)`
+   - `cuv = mean(u_centered · v_centered)`
+4. Compute the analytical principal angle of the covariance tensor via:
+
+   ```
+   angle_rad = 0.5 × arctan2(2 × cuv, cuu − cvv)
+   ```
+
+5. **Eastward alignment:** Flood direction is defined as positive Eastward flow. Any cell whose principal axis points Westward (i.e. `cos(angle_rad) < 0`) is flipped by adding π. Purely North–South cells (where `cos ≈ 0`) are aligned to point Northward.
+
+**Result:** A 2D NumPy array of `angle_rad` values, one per `(lat, lon)` cell, representing the flood direction. This array is computed once per NetCDF file and reused for all subsequent per-cell operations.
+
+---
+
+## Slack Water Detection
+
+### `project_to_principal_axis(u, v, angle_rad) -> (v_parallel, v_perpendicular)`
+
+Projects the raw eastward (`u`) and northward (`v`) velocity arrays onto the cell's local principal axis:
+
+```
+v_parallel      =  u × cos(angle_rad) + v × sin(angle_rad)
+v_perpendicular = −u × sin(angle_rad) + v × cos(angle_rad)
+```
+
+- **`v_parallel`** — the along-channel component. Positive values = Flood (flowing in the principal flood direction); negative values = Ebb. Slack water occurs at zero crossings.
+- **`v_perpendicular`** — the across-channel component (minor tidal ellipse axis). Typically small in well-channelled flows.
+
+### `find_zero_crossings(times, values) -> list[dict]`
+
+Detects exact slack-water moments from the `v_parallel` time series using **sub-sample linear interpolation** rather than simply snapping to the nearest data point (which would introduce up to half a 15-minute sample interval of error, or ~7.5 minutes).
+
+For each consecutive pair of samples where the sign changes (`v1 × v2 < 0`), the interpolation fraction is:
+
+```
+fraction = −v1 / (v2 − v1)
+t_zero   = t1 + fraction × (t2 − t1)
+```
+
+Each detected crossing is returned as a dictionary with:
+
+| Field | Description |
+|---|---|
+| `time` | Interpolated `datetime` of the slack-water moment. |
+| `index_pre` | Index of the last sample before the crossing. |
+| `direction` | `"neg_to_pos"` = Ebb→Flood transition; `"pos_to_neg"` = Flood→Ebb transition. |
+
+<Note>
+**PEC / PFC terminology:**
+- **PEC — Peak Ebb Current:** the strongest ebb-direction current speed in a tidal half-cycle (negative `v_parallel`).
+- **PFC — Peak Flood Current:** the strongest flood-direction current speed in a tidal half-cycle (positive `v_parallel`).
+
+These terms are used throughout the simulation pipeline to select start-time windows that maximize or minimize tidal assistance.
+</Note>
+
+---
+
+## Peak Current Detection
+
+### `analyse_grid_cell(ds, y_idx, x_idx, principal_angle_rad, nwmn_start_dt, nwmn_end_dt, lunarperiod_d, tidalperiod_h) -> dict`
+
+Processes the complete current time series for a single grid cell. After projecting onto the principal axis and finding all slack-water zero crossings, the function iterates over every half-cycle (the interval between two consecutive crossings) and identifies the **local maximum of `|v_parallel|`** within that interval — the peak current for that half-cycle.
+
+For each peak the function records:
+
+| Output Field | Description |
+|---|---|
+| `peak_time` | ISO 8601 timestamp of the peak (UTC). |
+| `amplitude_mps` | Signed parallel velocity in m/s (positive = Flood, negative = Ebb). |
+| `bearing_deg` | True-bearing direction of the raw U/V vector at the peak moment (0–360°). |
+| `lunar_phase_deg` | Position within the current synodic month (0° = New Moon, 180° = Full Moon). |
+| `nominal_tidal_phase_deg` | Phase within the idealized tidal cycle based on the lunar period. |
+| `dynamic_tidal_phase_deg` | Self-normalizing tidal phase interpolated between actual zero crossings (0°=Slack Ebb→Flood, 90°=Peak Flood, 180°=Slack Flood→Ebb, 270°=Peak Ebb). |
+
+**Spring/Neap reduction:** The full set of peaks across the lunar cycle is sorted by absolute amplitude. The top-6 highest-amplitude peaks are retained as **`spring_peaks`** (Spring tide proxies) and the bottom-6 lowest-amplitude peaks as **`neap_peaks`** (Neap tide proxies). Both lists are returned in chronological order. This dramatic data reduction (>99% size saving versus the full time series) is what makes storing per-cell analytics in JSON feasible.
+
+**Cell-level summary fields:**
+
+| Field | Description |
+|---|---|
+| `principal_flow_angle_deg` | Principal axis angle in degrees (Flood direction, Eastward-aligned). |
+| `max_peak_mps` | Absolute amplitude of the largest Spring peak (m/s). |
+| `min_peak_mps` | Absolute amplitude of the smallest Neap peak (m/s). |
+| `spring_peaks` | Top-6 peaks by amplitude (Spring tide proxies). |
+| `neap_peaks` | Bottom-6 peaks by amplitude (Neap tide proxies). |
+
+---
+
+## Land Masking
+
+### `classify_grid_cells(ds: xr.Dataset) -> (status_mask, is_boundary_mask)`
+
+Before any analysis is run, each grid cell is classified into one of three categories to prevent wasted computation and distorted statistics on land cells:
+
+| Code | Label | Criterion |
+|---|---|---|
+| `0` | **Land** | All time steps for `uo` are NaN or exactly 0.0 — no current data was modelled here. |
+| `1` | **Boundary** | A water cell with at least one Land cell among its 8 neighbours (including diagonals), or situated at the edge of the grid. |
+| `2` | **Water** | A fully active ocean cell with no adjacent land. |
+
+Returns a 2D integer `status_mask` array and a boolean `is_boundary_mask`. Land cells (`status_mask == 0`) are skipped entirely during `analyse_grid_cell()` processing. Boundary cells are analysed but flagged in the output JSON so that downstream consumers (e.g. the trajectory plotter) can optionally exclude them from interpolation to avoid coastal distortion.
+
+The classifier also outputs a GeoJSON polygon layer and a GPX waypoints file for visual inspection of the Land/Boundary/Water classification in any GIS tool.
+
+---
+
+## Simulation Use: `find_daily_tide_peaks()`
+
+During trajectory simulation (in `src/cscm/simulation/predict.py`), the full PCA machinery is not re-run at runtime. Instead, `find_daily_tide_peaks()` uses a faster, simpler approach suitable for real-time start-time detection:
+
+1. Find the nearest non-land grid cell to the swimmer's start position.
+2. Compute a **signed magnitude** series: `v_parallel = √(uo² + vo²) × sign(uo)`. Using the sign of the raw eastward component (`uo`) to indicate flood vs. ebb is a Pythagorean approximation that avoids a per-cell PCA lookup while remaining accurate enough for peak detection near the Belgian coast where flood flows are predominantly Eastward.
+3. Scan for local maxima (PFC candidates) and minima (PEC candidates) above a 0.1 m/s noise threshold.
+4. Apply a 4-hour minimum-spacing filter to eliminate duplicate detections of the same tidal event.
+5. Return the filtered PFC and PEC list chronologically, which the simulation job scheduler uses to select start-time windows.
+
+This two-tier design means the deep PCA analysis runs once per lunar-cycle NetCDF file (offline, batch), while the lighter Pythagorean detection runs quickly each time a simulation job is evaluated.

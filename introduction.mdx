@@ -1,0 +1,71 @@
+---
+title: "CSCM: Channel Swimmer Crossing Module Overview"
+sidebarTitle: "Introduction"
+description: "CSCM is a Python library solving Zermelo's Navigation Problem for open-water swimmers — combining tidal currents, moon cycles, and swimmer kinematics for optimal routing."
+---
+
+CSCM (Channel Swimmer Crossing Module) is a Python toolkit for tactical routing, tidal analysis, and trajectory optimization for ultra-distance open-water swimmers in the North Sea. At its core, CSCM solves **Zermelo's Navigation Problem** for human athletes: in coastal waters, tidal currents can easily match or exceed a swimmer's cruising speed, making the choice of heading, start time, and pacing strategy the decisive factor between a successful crossing and being swept miles off course. By vectorially combining localized tidal stream velocities with individual swimmer kinematics, CSCM computes the optimal steering angles over time to yield the fastest path from A to B — turning raw Copernicus Marine forecast data into actionable race plans.
+
+## Project Milestones
+
+CSCM is being built toward three concrete goals, each more ambitious than the last:
+
+**September 2026 — Koksijde Test Swim (Active)**
+The immediate target is to validate the kinematics model by predicting the exact trajectories of two 6-hour experimental courses off Koksijde, Belgium: heading 316° at high tide versus 333° at low tide. Both routes are engineered to safely clear the local Colruyt mussel farm, and the model's predictions will be verified against GPS tracks from the actual swim.
+
+**September 2027 — Historic Ultra-Crossing**
+The mid-term goal is to deliver a full tactical pacing, timing, and routing plan for a potential multi-day ultra-crossing of the North Sea. This phase introduces empirical fatigue decay models calibrated from real swim data collected across multiple athletes.
+
+**Long-Term — "Waze for Swimmers" App**
+The long-range vision is a serverless web application where any open-water swimmer can input start and end coordinates and instantly receive an optimal start-time window and dynamic heading strategy. The backend will use a cloud-optimised statistical tidal model (Zarr/Parquet) so the browser itself — running DuckDB-Wasm — can execute the routing query with minimal server infrastructure.
+
+## Module Structure
+
+CSCM is organized as a modular Python package under `src/cscm/`:
+
+| Module | Purpose |
+|---|---|
+| `model.py` | Core domain kinematics: `Position`, `SpeedVector`, `Swimmer`, `CurrentsModel`, `TrajectoryCalculator`, and abstract interfaces for environment and pathfinder implementations |
+| `moon/phases.py` | High-precision astronomical moon phase and synodic cycle calculations via NASA JPL ephemeris files (`skyfield`), used to partition CMEMS downloads into tidal-lag-safe lunar windows |
+| `current/cmems/retrieve.py` | Robust data management layer that downloads 1.5 km / 15-minute resolution 2D hydrodynamic current forecasts from Copernicus Marine Service, partitioned per lunar cycle with asymmetric +5-day trailing margins to capture tidal age lag |
+| `current/cmems/analyse.py` | Adaptive spatial analysis engine that runs per-cell PCA on U/V velocity vectors to determine each grid cell's principal tidal flow axis, then uses linear sub-step interpolation to pinpoint slack water reversals and peak ebb/flood times |
+| `simulation/` | Trajectory prediction engine that drives `Swimmer` objects through `CmemsForecastCurrentsModel` environments, generates GPX tracks, overview maps, and dispatches automated email reports |
+| `tide/` | Water level APIs integrating with Meetnet Vlaamse Banken (MDK) tide gauge data via `pywaterinfo` |
+| `wellknown.py` | Built-in geographic positions (Koksijde, Nieuwpoort, Kingsgate, Orford Ness, Dover, Cap Blanc Nez, and intermediate waypoints) and verified swimmer profiles with calibrated cruising speeds and heading jitter functions |
+
+## Explore the Docs
+
+<CardGroup cols={2}>
+  <Card
+    title="Quickstart"
+    icon="rocket"
+    href="/quickstart"
+  >
+    Install CSCM with Poetry, configure credentials, and run your first trajectory simulation in under 10 minutes.
+  </Card>
+  <Card
+    title="Kinematics Model"
+    icon="wave-sine"
+    href="/concepts/kinematics-model"
+  >
+    Understand how `SpeedVector`, `Swimmer`, `CurrentsModel`, and `TrajectoryCalculator` interact to solve Zermelo's problem.
+  </Card>
+  <Card
+    title="CMEMS Data Pipeline"
+    icon="database"
+    href="/data/cmems-retrieval"
+  >
+    Learn how CSCM downloads and partitions Copernicus Marine forecast data by lunar cycle and runs adaptive PCA tidal analysis.
+  </Card>
+  <Card
+    title="Simulation Engine"
+    icon="map"
+    href="/simulation/overview"
+  >
+    Explore the YAML job format, tidal peak detection, GPX export, and automated email reporting capabilities.
+  </Card>
+</CardGroup>
+
+<Note>
+  CSCM requires **Python 3.14** or later. You will also need a free **Copernicus Marine Service** account to download CMEMS forecast data — register at [marine.copernicus.eu](https://marine.copernicus.eu/). Some features (water level APIs) additionally require a **Meetnet Vlaamse Banken (MDK)** account.
+</Note>

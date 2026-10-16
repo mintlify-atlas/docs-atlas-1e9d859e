@@ -1,0 +1,236 @@
+---
+title: "Simulation Output: GPX Tracks, Maps, and Email Reports"
+sidebarTitle: "Output Formats"
+description: "CSCM simulations produce GPX 1.1 track files, PNG fishbone trajectory maps, and HTML email reports summarising the predicted swim options for each date."
+---
+
+For every active simulation job CSCM produces three distinct outputs per simulation date: **per-trajectory GPX files** that can be loaded onto any GPS device or navigation app, a **daily overview PNG** — the *visgraat* (fishbone) map — that visualises all predicted trajectories overlaid on a current-vector diagram, and an optional **HTML email report** that delivers the map and GPX files directly to the swimmer's inbox. Together these outputs give a swimmer everything needed to pick the best start time and verify the expected drift pattern before entering the water.
+
+---
+
+## GPX Track files
+
+### write_gpx_track()
+
+```python
+from cscm.simulation.predict import write_gpx_track
+
+write_gpx_track(df, track_name, output_path)
+```
+
+| Argument      | Type          | Description                                                   |
+|---------------|---------------|---------------------------------------------------------------|
+| `df`          | `pd.DataFrame`| Trajectory DataFrame from `simulate_test_swim()`              |
+| `track_name`  | `str`         | Human-readable label embedded in `<name>` and `<metadata>`    |
+| `output_path` | `Path`        | Absolute or relative path for the output `.gpx` file          |
+
+`write_gpx_track()` serialises the trajectory DataFrame as a GPX 1.1 XML document. Each row in the DataFrame becomes a `<trkpt>` element inside a single `<trkseg>`:
+
+```xml
+<?xml version='1.0' encoding='UTF-8'?>
+<gpx version='1.1' creator='CSCM Trajectory Generator'
+     xmlns='http://www.topografix.com/GPX/1/1'>
+  <metadata>
+    <name>PEC Run - 06:42 CEST</name>
+    <desc>Simulated 6h Coast Swim Track</desc>
+  </metadata>
+  <trk>
+    <name>PEC Run - 06:42 CEST</name>
+    <trkseg>
+      <trkpt lat='51.103200' lon='2.647800'>
+        <time>2027-10-07T04:42:00+00:00</time>
+      </trkpt>
+      <!-- one point per 60-second step -->
+    </trkseg>
+  </trk>
+</gpx>
+```
+
+Timestamps are written as ISO 8601 strings directly from the `time` column of the DataFrame (UTC).
+
+### Output filename template
+
+The GPX filename is resolved from the `results.files.gpx` job file field:
+
+```yaml
+results:
+  files:
+    gpx: ./{date}-{calc.id}.gpx
+```
+
+With a `calc.id` of `{date}-myname-{time}-pec`, a simulation date of `2027-10-07`, and a detected start time of `06:42` local (CEST), the resolved filename would be:
+
+```
+2027-10-07-2027-10-07-myname-0642-pec.gpx
+```
+
+### Importing GPX files
+
+GPX 1.1 is the universal exchange format for GPS tracks. CSCM-generated files are compatible with:
+
+- **Garmin devices** — copy to the `Garmin/GPX/` folder on the device via USB
+- **Komoot / Strava** — import via the "Route" or "Activity" upload UI
+- **Google Earth** — drag and drop the `.gpx` file into the Earth window
+- **QGIS / GIS tools** — add vector layer, GPX driver
+- **OpenCPN** (marine chart plotter) — import as a track or route
+
+---
+
+## Overview PNG map
+
+### plot_daily_simulations()
+
+```python
+from cscm.simulation.predict import plot_daily_simulations
+
+plot_daily_simulations(
+    df_list=plot_data_list,    # list of (df, tide_type, start_dt, calc_cfg) tuples
+    day_label="07 October 2027",
+    output_path=Path("./results/2027-10-07-overview.png"),
+    status_mask=status_mask,  # np.ndarray from classify_grid_cells()
+    lats=lats,
+    lons=lons,
+    model=model,
+    coastline_wkt_path=Path("./data/simulation/coastline.wkt.csv"),
+    obstructions_wkt_path=Path("./data/simulation/obstructions.wkt.csv"),
+    colors_cfg=colors_cfg,    # JobColorsConfig or None
+    labels_cfg=labels_cfg     # JobLabelsConfig or None
+)
+```
+
+The function renders a **11 × 10 inch** matplotlib figure at 150 DPI and saves it as a PNG. The map auto-zooms to a bounding box that tightly fits all trajectory endpoints, with a ~1500 m (≈ 0.0135 °) outset buffer on all sides.
+
+### Map layers (bottom to top)
+
+| Layer | z-order | Description |
+|-------|---------|-------------|
+| Water grid | 1 | `pcolormesh` of CMEMS water cells — blue (`#0087d6`), 10% opacity |
+| Boundary grid | 1 | `pcolormesh` of boundary cells — grey (`#C0C0C0`), 15% opacity |
+| Land grid | 1 | `pcolormesh` of land cells — brown (`#54360f`), 75% opacity |
+| Grid contour | 2 | Thin black contour separating land from water, 30% opacity |
+| Coastline polygons | 3–4 | Sandy yellow fill (`#f8f1b0`) with black stroke — from `coastline.wkt.csv` |
+| Obstruction polygons | 5 | Pink hatched fill (`#f33bfe`, 35%) — from `obstructions.wkt.csv` |
+| Rib vectors | 5 | 15-minute current displacement lines from each backbone node |
+| Rib labels | 6 | Speed (m/s) or distance (m) label at the end of each rib |
+| Backbone spine | 4 | Dotted line representing the intended course at 1.0 m/s |
+| Spine label | 7 | Rotated text along the spine: bearing, duration, total distance |
+| Actual trajectory | 6 | Solid line showing the simulated (drift-affected) path |
+| Direction arrow | 7 | Arrowhead annotation at the midpoint of the trajectory |
+| Start marker | 8 | Gold star (`★`) at the departure position |
+
+### Fishbone (visgraat) construction
+
+The backbone spine is drawn from the start position to the projected no-current endpoint at `bearing_deg` and 1.0 m/s swimmer speed. At every **15-minute** (900 s) interval along the backbone a rib is computed:
+
+1. The backbone point at elapsed time `t` is calculated using pure swimmer velocity (no current).
+2. `model.get_current_vector()` is called at that point and time to fetch the live U/V current.
+3. The rib endpoint is the backbone point displaced by `(u × 900 s, v × 900 s)`.
+4. A small solid dot marks the rib tip.
+
+This layout makes it immediately obvious whether the current is helping, hindering, or deflecting the swimmer at each phase of the tide — and by how much.
+
+### Configurable label formats
+
+Labels on the map are controlled by the `results.labels` block in the job file:
+
+**Rib labels** (`results.labels.ribs`):
+
+| Value | Example | Description |
+|-------|---------|-------------|
+| `deviationdistance` | `840m` | Displacement of the rib endpoint from the backbone node in metres (`speed × 900 s`) |
+| `deviationspeed` | `0.93` | Current speed in m/s at the rib node |
+
+**Spine label** (`results.labels.spine`) — `|`-separated combination of:
+
+| Token | Example | Description |
+|-------|---------|-------------|
+| `bearing` | `333°` | Heading in degrees True North |
+| `duration` | `6.0h` | Swim duration |
+| `totaldistance` | `21.6 km` | Straight-line distance at 1.0 m/s for the full duration |
+| `speed` | `1.0 m/s` | Nominal swimmer speed |
+| `type` | `PEC (Ebb)` | Tide type label |
+
+---
+
+## Email reports
+
+If `results.mail` is configured in the job file, the simulator dispatches one HTML email per simulation date immediately after the overview map is saved.
+
+### Structure
+
+The email is built as a MIME `multipart/mixed` message:
+- A `multipart/related` container holds the HTML body alongside the overview PNG embedded as a **CID inline image** (`cid:overview`). This means the map appears directly in the email body — no external image loading required.
+- Binary GPX file attachments are appended to the outer `multipart/mixed` wrapper.
+
+### Jinja2 template variables
+
+The HTML template at `results.mail.template` is rendered with Jinja2. The following variables are available:
+
+| Variable | Type | Description |
+|----------|------|-------------|
+| `job_title` | `str` | Value of `title` from the job file |
+| `date` | `str` | Simulation date formatted as `DD-MM-YYYY` |
+| `now` | `str` | Script run timestamp in `YYYY-MM-DD HH:MM` (local timezone) |
+| `tz_name` | `str` | Timezone abbreviation (e.g. `CEST`, `CET`) |
+| `qotd_text` | `str` or `None` | Quote text from `qotd.yml`, randomly selected |
+| `qotd_author` | `str` or `None` | Author of the selected quote |
+| `calculations` | `list[dict]` | List of simulation summaries (see below) |
+| `forecast_notice` | `str` or `None` | Warning text if CMEMS live update failed |
+
+Each entry in `calculations` is a dict with:
+
+| Key | Description |
+|-----|-------------|
+| `start_time_local` | Local start time as `HH:MM` |
+| `type` | `"PFC (Flood)"`, `"PEC (Ebb)"`, or `"Custom"` |
+| `bearing` | Heading in degrees (float) |
+| `duration` | Duration string e.g. `"6.0h"` |
+| `gpx_filename` | Resolved GPX filename string |
+
+### Referencing the embedded map in HTML
+
+The overview PNG is embedded with Content-ID `overview`. Reference it in your template like this:
+
+```html
+<img src="cid:overview" alt="Trajectory Overview" style="max-width:100%;">
+```
+
+### Attach modes
+
+The `results.mail.attach` field controls what is included:
+
+| Value | Overview PNG | GPX files |
+|-------|:------------:|:---------:|
+| `all` | ✅ CID-embedded | ✅ Attached |
+| `overview` | ✅ CID-embedded | ❌ |
+| `gpx` | ❌ | ✅ Attached |
+| `none` | ❌ | ❌ |
+
+<Note>
+  Email delivery requires `SMTP_HOST` to be set in the project's `.env` file (or environment). If `SMTP_HOST` is absent, the rendered HTML is written to a temporary file in `/tmp/` and a log message points to its location — useful for inspecting the template output without an SMTP relay.
+</Note>
+
+---
+
+## Filename templates
+
+All output path templates in the `results` block support the following substitution tokens:
+
+| Token | Replaced with | Example |
+|-------|---------------|---------|
+| `{date}` | Simulation date in `YYYY-MM-DD` | `2027-10-07` |
+| `{now}` | Script run timestamp as `YYYYMMDD_HHMMSS` | `20271006_031500` |
+| `{calc.id}` | The resolved `calc[].id` value (after its own `{date}` and `{time}` tokens are expanded) | `2027-10-07-myname-0642-pec` |
+| `{time}` | Detected start time in `HHMM` format (used *inside* `calc[].id`) | `0642` |
+
+Tokens inside `calc[].id` are expanded first using the simulation date and detected local start time, and the resulting string is then available as `{calc.id}` in the file path templates:
+
+```yaml
+calc:
+  - id: "{date}-myname-{time}-pec"
+
+results:
+  files:
+    gpx: ./{date}-{calc.id}.gpx
+    # Resolves to: ./2027-10-07-2027-10-07-myname-0642-pec.gpx
+```

@@ -1,0 +1,151 @@
+---
+title: "Simulation Engine: Trajectory Prediction for Open-Water Swimmers"
+sidebarTitle: "Overview"
+description: "CSCM's simulation engine combines CMEMS current forecasts with swimmer kinematics to predict trajectories, detect optimal start times, and produce GPX tracks and map plots."
+---
+
+The CSCM simulation engine takes a CMEMS NetCDF forecast file and a [job configuration](/simulation/job-files), then turns them into actionable swim-day intelligence. For each job it reads the U/V current grid, detects **Peak Ebb Current (PEC)** and **Peak Flood Current (PFC)** moments at the chosen start position, and runs a step-by-step vector integration for every candidate start time. For each detected start, the engine writes a GPX track file and composes a daily overview PNG — the *visgraat* (fishbone) map — that shows actual trajectories, the intended-course backbone, and 15-minute current rib vectors laid out perpendicular to the spine. An optional email dispatch step then ships those files to the swimmer's inbox via SMTP.
+
+---
+
+## Architecture overview
+
+The pipeline runs in the following sequence each time a job is executed:
+
+<Steps>
+  <Step title="Load CMEMS NetCDF dataset">
+    `xr.open_dataset()` opens the local NetCDF file that was downloaded by the [CMEMS retrieval module](/data/cmems-retrieval). The file covers a date range spanning the simulation window with a tidal-lag-safe margin on both ends. Coordinate names (`latitude`/`lat`, `longitude`/`lon`) are detected automatically.
+  </Step>
+
+  <Step title="find_daily_tide_peaks()">
+    For each simulation date, `find_daily_tide_peaks()` scans the full 24-hour UTC window at the focal start position. It snaps the requested position to the nearest open-water grid cell, computes the Pythagorean current magnitude and the sign of the eastward component `uo` to produce a signed parallel-current time series, then picks local maxima (PFC — flood, eastward-dominant) and local minima (PEC — ebb, westward-dominant) above a 0.1 m/s noise threshold. A 4-hour temporal dead-band filters out spurious duplicate peaks. The result is a chronologically ordered list of `{time, type, velocity_mps}` dicts.
+  </Step>
+
+  <Step title="simulate_test_swim()">
+    For each candidate start time that passes the `in-range` local-time filter, `simulate_test_swim()` integrates the trajectory forward in 60-second steps. At every step the engine calls `CmemsForecastCurrentsModel.get_current_vector()` to fetch the interpolated (U, V) current at the current position and time, vectorially adds the swimmer's intrinsic velocity to get an effective velocity, and converts the result to WGS84 degree offsets using the correct latitude-dependent longitude scaling factor. The result is a `pd.DataFrame` of time-stamped positions and current data.
+  </Step>
+
+  <Step title="plot_daily_simulations()">
+    `plot_daily_simulations()` composes a matplotlib figure for all trajectories on a given date. The background grid is coloured by land (brown), boundary (grey), and water (blue) status derived from the CMEMS dataset itself. Optional WKT coastline and obstruction polygon files are overlaid. Actual trajectory lines are drawn solid and colour-coded; an arrow annotation on each line shows direction. The *visgraat* (fishbone) backbone represents the intended course with 15-minute current rib vectors hanging off it at equal intervals, each labelled with deviation distance (m) or speed (m/s). A gold star marks the start position. The figure is saved as a PNG at the configured output path.
+  </Step>
+
+  <Step title="write_gpx_track()">
+    For every simulated trajectory, `write_gpx_track()` serialises the `pd.DataFrame` as a GPX 1.1 XML file. Each row in the DataFrame becomes a `<trkpt>` element with `lat`, `lon`, and `<time>` in ISO 8601 format. The file can be loaded directly into any GPS device or navigation app.
+  </Step>
+
+  <Step title="Email dispatch (optional)">
+    If `results.mail` is configured in the job file, `mailer.py` builds an RFC-compliant MIME message with the overview PNG embedded as a CID inline image and all GPX files attached, then delivers it via the configured SMTP relay. If `SMTP_HOST` is not set, the rendered HTML is saved to `/tmp` as a local fallback.
+  </Step>
+</Steps>
+
+---
+
+## CmemsForecastCurrentsModel class
+
+`CmemsForecastCurrentsModel` wraps an open `xr.Dataset` and provides a clean single-method interface for current lookups at any point in space and time.
+
+### Constructor
+
+```python
+from cscm.simulation.predict import CmemsForecastCurrentsModel
+import xarray as xr
+
+ds = xr.open_dataset("./data/cmems/forecast.nc")
+model = CmemsForecastCurrentsModel(ds)
+```
+
+The constructor accepts a single `xr.Dataset` argument. It auto-detects whether the coordinate names are `latitude`/`longitude` or `lat`/`lon`.
+
+### get_current_vector()
+
+```python
+u, v = model.get_current_vector(position: Position, moment: datetime) -> tuple[float, float]
+```
+
+| Argument   | Type       | Description                                               |
+|------------|------------|-----------------------------------------------------------|
+| `position` | `Position` | WGS84 lat/lon of the query point                          |
+| `moment`   | `datetime` | UTC timestamp (timezone-aware) of the query               |
+
+**Returns** `(u, v)` — eastward and northward current speed in **m/s**.
+
+The method performs tri-linear (lat × lon × time) interpolation using `xr.Dataset.interp()`. It returns `(0.0, 0.0)` in three cases:
+- The requested `moment` is outside the dataset's temporal extent.
+- The requested position is outside the dataset's spatial bounding box.
+- The interpolated value is `NaN` — which occurs at land cells or near the coastline where the CMEMS grid is masked.
+
+---
+
+## simulate_test_swim() function
+
+`simulate_test_swim()` is the core trajectory integration routine.
+
+```python
+from cscm.simulation.predict import simulate_test_swim
+
+df = simulate_test_swim(
+    model=model,
+    start_pos=start_pos,        # Position(lat, lon)
+    start_time=start_time,      # datetime (UTC, timezone-aware)
+    heading_deg=333.0,          # True North heading in degrees
+    duration_hours=6.0,         # Default: 6.0 hours
+    time_step_sec=60            # Default: 60 seconds
+)
+```
+
+### Parameters
+
+| Parameter        | Type                           | Default | Description                                               |
+|------------------|--------------------------------|---------|-----------------------------------------------------------|
+| `model`          | `CmemsForecastCurrentsModel`   | —       | Current model wrapping the CMEMS dataset                  |
+| `start_pos`      | `Position`                     | —       | WGS84 starting coordinates                                |
+| `start_time`     | `datetime`                     | —       | UTC start timestamp                                       |
+| `heading_deg`    | `float`                        | —       | Constant swimmer heading in degrees True North            |
+| `duration_hours` | `float`                        | `6.0`   | Total simulation duration                                 |
+| `time_step_sec`  | `int`                          | `60`    | Integration time step in seconds                          |
+
+### Return value
+
+Returns a `pd.DataFrame` with one row per time step:
+
+| Column        | Type    | Description                                                 |
+|---------------|---------|-------------------------------------------------------------|
+| `time`        | `str`   | ISO 8601 UTC timestamp of the step                          |
+| `lat`         | `float` | Latitude at the step (WGS84 degrees)                        |
+| `lon`         | `float` | Longitude at the step (WGS84 degrees)                       |
+| `u_current`   | `float` | Eastward current component at the step (m/s)                |
+| `v_current`   | `float` | Northward current component at the step (m/s)               |
+| `v_magnitude` | `float` | Current speed magnitude `√(u²+v²)` at the step (m/s)       |
+
+### Integration mechanics
+
+The swimmer's intrinsic speed is fixed at **1.0 m/s** along `heading_deg`. At each time step:
+
+```
+v_eff_east  = sin(heading_rad) + u_current
+v_eff_north = cos(heading_rad) + v_current
+
+delta_lat = v_eff_north × Δt / 111132
+delta_lon = v_eff_east  × Δt / (111132 × cos(lat_rad))
+```
+
+The latitude-dependent denominator `111132 × cos(lat)` ensures physically correct degree-per-metre scaling in the longitude direction — important for accurate trajectory prediction at the ~51 °N latitude of the Belgian and English coasts.
+
+---
+
+## Navigation
+
+<CardGroup cols={2}>
+  <Card title="Job Files" icon="file-code" href="/simulation/job-files">
+    YAML configuration reference for swim simulation jobs
+  </Card>
+  <Card title="Running Simulations" icon="terminal" href="/simulation/running-simulations">
+    CLI usage, flags, and execution flow
+  </Card>
+  <Card title="Output Formats" icon="map" href="/simulation/output-formats">
+    GPX tracks, fishbone PNG maps, and email reports
+  </Card>
+  <Card title="CMEMS Data Retrieval" icon="database" href="/data/cmems-retrieval">
+    Downloading and managing Copernicus forecast data
+  </Card>
+</CardGroup>

@@ -1,0 +1,256 @@
+---
+title: "Analyse CMEMS NetCDF Files with Per-Cell Tidal PCA"
+sidebarTitle: "CMEMS Analysis"
+description: "CSCM runs vectorised Principal Component Analysis on every CMEMS grid cell to extract tidal flow axes, peak currents, slack-water times, and Spring/Neap envelopes."
+---
+
+`process_nc_file()` and `process_catalog()` transform raw CMEMS NetCDF files into compact JSON analysis databases — one `*_analysis.json` file per NetCDF — that power the CSCM simulation engine. For each non-land grid cell, the pipeline projects current velocities onto the dominant tidal axis using vectorised Principal Component Analysis (PCA), extracts all Spring and Neap peak currents within the lunar cycle, identifies the first Spring peak after each new moon as a time-phase calibration anchor, and strips the result down to a minimal JSON representation that is orders of magnitude smaller than the source NetCDF.
+
+<Tip>
+`process_nc_file()` caches its results: if the `_analysis.json` file on disk is newer than both the source `.nc` file and its `.json` metadata sidecar, the function returns immediately without re-processing. Re-running the pipeline after an unmodified download is therefore safe and essentially instant.
+</Tip>
+
+## `process_nc_file()` function
+
+```python
+from cscm.current.cmems.analyse import process_nc_file
+```
+
+Processes a single Copernicus CMEMS NetCDF file through the full tidal analysis pipeline and writes a companion `*_analysis.json` file.
+
+### Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `nc_path` | `Path` | — | Path to the source NetCDF file to analyse. |
+| `nwmn_start_dt` | `datetime` | — | Astronomical new moon that opens this lunar cycle (used as the phase origin for calibration). |
+| `nwmn_end_dt` | `datetime` | — | Astronomical new moon that closes this lunar cycle (end of cycle phase reference). |
+| `lunarperiod_d` | `float` | — | Length of this synodic month in fractional days (from the catalog, typically ~29.53). |
+| `tidalperiod_h` | `float` | — | Semi-diurnal tidal period in hours (from the catalog, typically ~12.42). |
+| `geom_to_filter` | `BaseGeometry \| None` | `None` | Optional Shapely geometry. When provided, only grid cells whose centroid falls inside the geometry are analysed. Useful for restricting computation to the swim corridor. |
+| `force_recalculate` | `bool` | `False` | When `True`, bypasses the cache check and always re-runs the full pipeline even if an up-to-date `_analysis.json` already exists. |
+| `focal_positions` | `list[Position] \| None` | `None` | A list of `Position` objects for which to generate PNG verification plots. For each position the nearest non-boundary water cell is found and a dual-axis velocity/bearing plot is saved alongside the NetCDF file. |
+
+### Pipeline steps
+
+#### 1. Caching check
+
+If `force_recalculate` is `False` and the output `_analysis.json` is newer than both the `.nc` file and its `.json` metadata sidecar, the function logs a skip message and returns the existing path immediately. Pass `force_recalculate=True` to override this.
+
+#### 2. Grid verification — `verify_grid_metadata(ds)`
+
+Logs and returns a dictionary of grid metrics: number of latitude/longitude steps, physical cell spacing in kilometres (derived via the Haversine formula at the grid's mean latitude), temporal sampling interval in minutes, total number of time steps, and the bounding box `[min_lon, max_lon, min_lat, max_lat]`. This metadata is embedded in the output JSON under `grid_metadata`.
+
+#### 3. Land classification — `classify_grid_cells(ds)`
+
+Iterates every cell in the grid and assigns one of three classes:
+
+| Class | Integer | Description |
+|-------|---------|-------------|
+| **Land** | `0` | All time steps for the `uo` velocity component are either `NaN` or exactly `0.0`. |
+| **Boundary** | `1` | A water cell that has at least one Land neighbour in the 8-cell Moore neighbourhood, or sits on the edge of the grid extent. |
+| **Water** | `2` | A water cell fully surrounded by other water cells. |
+
+Land cells are excluded from all subsequent analysis. Boundary cells are included in the analysis but flagged `is_boundary: true` in the output JSON so the simulation engine can apply appropriate edge treatment.
+
+#### 4. GIS file generation — `generate_gis_files(...)`
+
+Produces two verification files alongside the NetCDF:
+
+- **`*_grid.geojson`** — a GeoJSON `FeatureCollection` of rectangular `Polygon` features, one per cell, colour-coded by class (Land = `#8B4513`, Boundary = `#808080`, Water = `#0000FF`). Suitable for direct inspection in QGIS or geojson.io.
+- **`*_grid.gpx`** — a GPX waypoints file with one waypoint per cell centroid, also class-tagged. Useful for on-device chart overlay verification.
+
+#### 5. Vectorised PCA — `calculate_grid_principal_angles(ds)`
+
+Computes the principal flow axis angle (in radians) for the entire 2D grid in a single vectorised NumPy pass:
+
+1. Computes the time-mean `u` and `v` components across all time steps.
+2. Centres the velocity time series for each cell.
+3. Assembles the 2×2 covariance tensor components `Cuu`, `Cvv`, `Cuv`.
+4. Solves the analytical eigenvector equation: `angle = 0.5 × arctan2(2·Cuv, Cuu − Cvv)`.
+5. Flips the angle by π for cells where the principal axis would point westward (or southward for purely meridional flows), ensuring the **flood direction always has a positive eastward component** ("Oostwaartse Aligned").
+
+The result is a 2D NumPy array of angles in `[0, 2π)`, shape `(num_lats, num_lons)`.
+
+#### 6. Per-cell analysis — `analyse_grid_cell(...)`
+
+For each non-land cell:
+
+1. Projects the `uo` / `vo` velocity time series onto the cell's principal axis to get `v_parallel` (along-axis / flood-ebb) and `v_perpendicular` (cross-axis).
+2. Finds all zero crossings of `v_parallel` via linear interpolation to locate slack-water transitions.
+3. Identifies the local maximum of `|v_parallel|` in each half-cycle between consecutive slack-water crossings — yielding one peak record per flood or ebb half-tide.
+4. For each peak, records: peak time, signed amplitude in m/s, bearing in degrees True North, lunar phase angle (relative to `nwmn_start_dt`), nominal tidal phase (relative to the semi-diurnal period), dynamic tidal phase (0°=slack→flood, 90°=peak flood, 180°=slack→ebb, 270°=peak ebb), and day offset from `nwmn_start_dt`.
+5. Sorts all peaks by absolute amplitude and retains the **6 largest** (Spring proxies) and **6 smallest** (Neap proxies) for the output, discarding intermediate peaks to minimise JSON size.
+
+#### 7. Calibration anchors
+
+After per-cell analysis, the pipeline identifies two **calibration peaks** for each cell by scanning the combined Spring+Neap peak list:
+
+- **`begin_peak_ref`** — the first positive-direction (flood) peak that occurs at or after `nwmn_start_dt`. This represents the first post-new-moon Spring peak and captures the **tidal age lag** at that cell.
+- **`end_peak_ref`** — the first positive-direction peak at or after `nwmn_end_dt`. This anchors the end of the cycle for phase interpolation.
+
+The time elapsed between `nwmn_start_dt` and `begin_peak_ref` (in fractional days) is stored as `tidal_age_lag_days`. These two anchors allow the simulation engine to construct a time-phase mapping for any arbitrary moment within the lunar cycle, independent of the nominal tidal period.
+
+#### 8. Output JSON
+
+Writes a `*_analysis.json` file (same directory and stem as the NetCDF) containing:
+
+```json
+{
+  "source_file": "filename.nc",
+  "processed_at": "2026-09-15T08:00:00+00:00",
+  "grid_metadata": { "num_lats": 50, "num_lons": 80, "..." : "..." },
+  "num_cells": 2400,
+  "cells": {
+    "cell_51.12340_2.62580": {
+      "cell_id": "cell_51.12340_2.62580",
+      "latitude": 51.1234,
+      "longitude": 2.6258,
+      "is_boundary": false,
+      "principal_flow_angle_deg": 72.4,
+      "calibration": {
+        "begin_time": "2026-09-05T06:45:00+00:00",
+        "begin_amplitude_mps": 1.42,
+        "begin_lunar_phase_deg": 12.3,
+        "end_time": "2026-10-05T07:10:00+00:00",
+        "end_amplitude_mps": 1.38,
+        "end_lunar_phase_deg": 8.7,
+        "tidal_age_lag_days": 1.82
+      }
+    }
+  }
+}
+```
+
+Cell IDs follow the pattern `cell_{latitude:.5f}_{longitude:.5f}`. Only cells for which both calibration anchors could be resolved are written to the output; cells where no valid peak was found after either new moon are silently omitted.
+
+#### 9. Verification plots — `plot_cell_analysis(...)`
+
+If `focal_positions` is provided, the pipeline snaps each position to the nearest **non-boundary** water cell (falling back to all water cells if none exists) and generates a dual-axis PNG plot:
+
+- **Left axis** — `|V|` total speed (black), `V‖` parallel velocity (blue), `V⊥` perpendicular velocity (dashed green).
+- **Right axis** — current bearing in degrees True North (orange scatter).
+- Flood and ebb reference bearing lines are drawn at `principal_flow_angle_deg` and `principal_flow_angle_deg + 180°`.
+- The two calibration anchor peaks are marked with crimson dots and vertical dashed lines.
+
+Plots are saved as `{nc_stem}_verify_cell_{position_label}.png` alongside the NetCDF file.
+
+---
+
+## `process_catalog()` function
+
+```python
+from cscm.current.cmems.analyse import process_catalog
+```
+
+Convenience wrapper that iterates all rows in a `CMEMSDataManager.catalog` DataFrame and calls `process_nc_file()` for each one, passing the per-row astronomical parameters directly from the catalog columns.
+
+```python
+process_catalog(
+    catalog,
+    *,
+    geom_to_filter=None,
+    force_recalculate=False,
+    focal_positions=None,
+)
+```
+
+Rows are processed in **newest-first** order (descending `nwmn_start_dt`) so that the most recent forecast data completes first if the run is interrupted. Files listed in the catalog that no longer exist on disk are skipped with a warning.
+
+### Typical usage
+
+```python
+from cscm.current.cmems.retrieve import CMEMSDataManager
+from cscm.current.cmems.analyse import process_catalog
+
+manager = CMEMSDataManager()
+manager.update_cmems_data(limit=3)
+
+process_catalog(manager.catalog, force_recalculate=False)
+```
+
+---
+
+## Analysis JSON schema
+
+The full structure of each `*_analysis.json` output file:
+
+```json
+{
+  "source_file": "filename.nc",
+  "processed_at": "2026-09-15T08:00:00+00:00",
+  "grid_metadata": {
+    "num_lats": 50,
+    "num_lons": 80,
+    "lat_step_deg": 0.01352,
+    "lon_step_deg": 0.01503,
+    "lat_spacing_km": 1.50,
+    "lon_spacing_km": 1.05,
+    "time_step_minutes": 15.0,
+    "bbox": [0.47, 3.57, 50.73, 52.58],
+    "total_time_steps": 3000
+  },
+  "num_cells": 2400,
+  "cells": {
+    "cell_51.12340_2.62580": {
+      "cell_id": "cell_51.12340_2.62580",
+      "latitude": 51.1234,
+      "longitude": 2.6258,
+      "is_boundary": false,
+      "principal_flow_angle_deg": 72.4,
+      "calibration": {
+        "begin_time": "2026-09-05T06:45:00+00:00",
+        "begin_amplitude_mps": 1.42,
+        "begin_lunar_phase_deg": 12.3,
+        "end_time": "2026-10-05T07:10:00+00:00",
+        "end_amplitude_mps": 1.38,
+        "end_lunar_phase_deg": 8.7,
+        "tidal_age_lag_days": 1.82
+      }
+    }
+  }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `source_file` | Filename (not full path) of the source NetCDF. |
+| `processed_at` | UTC ISO 8601 timestamp of when this analysis was written. |
+| `grid_metadata` | Dictionary from `verify_grid_metadata()` — grid dimensions, cell spacing, temporal resolution, bounding box. |
+| `num_cells` | Number of non-land cells successfully written to `cells`. |
+| `cells` | Dictionary keyed by `cell_id`. Each value is the stripped per-cell record (see below). |
+| `cell_id` | String key `"cell_{lat:.5f}_{lon:.5f}"`. |
+| `latitude` / `longitude` | Cell centroid coordinates in decimal degrees. |
+| `is_boundary` | `true` for Boundary cells (adjacent to land), `false` for fully open Water cells. |
+| `principal_flow_angle_deg` | Dominant tidal axis in degrees clockwise from East `[0, 360)`. Flood direction has a positive eastward component. |
+| `calibration.begin_time` | ISO 8601 UTC time of the first flood-direction Spring peak after `nwmn_start_dt`. |
+| `calibration.begin_amplitude_mps` | Signed parallel velocity at the begin calibration peak (m/s). |
+| `calibration.begin_lunar_phase_deg` | Lunar phase angle `[0, 360)` at the begin peak relative to `nwmn_start_dt`. |
+| `calibration.end_time` | ISO 8601 UTC time of the first flood-direction Spring peak after `nwmn_end_dt`. |
+| `calibration.end_amplitude_mps` | Signed parallel velocity at the end calibration peak (m/s). |
+| `calibration.end_lunar_phase_deg` | Lunar phase angle at the end peak. |
+| `calibration.tidal_age_lag_days` | Days elapsed between `nwmn_start_dt` and `begin_time` — the observed tidal age lag at this cell. |
+
+---
+
+## CLI usage
+
+```bash
+# Full pipeline: download CMEMS data AND run analysis
+poetry run python -m cscm.current.cmems
+
+# Run analysis only (skip download), force recalculation of all JSON files
+poetry run python -m cscm.current.cmems --skip-update --force
+
+# Limit to the 3 most recent cycles, with DEBUG logging
+poetry run python -m cscm.current.cmems --limit 3 --log-level DEBUG
+```
+
+Set `CMEMS_FOCAL_POSITIONS` in your `.env` to control which positions receive verification PNG plots:
+
+```ini
+# .env
+CMEMS_FOCAL_POSITIONS=KOKSIJDE,BREDENE_POST4,W_1_2
+```
+
+Use `CMEMS_FOCAL_POSITIONS=*` to generate plots for every known position in `cscm.wellknown.POSITIONS`.

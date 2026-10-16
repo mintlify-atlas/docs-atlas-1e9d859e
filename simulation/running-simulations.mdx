@@ -1,0 +1,136 @@
+---
+title: "Run CSCM Swim Simulations from the Command Line"
+sidebarTitle: "Running Simulations"
+description: "Use the cscm.simulation CLI module to execute trajectory predictions, optionally skipping CMEMS data updates for faster iteration during development."
+---
+
+`python -m cscm.simulation` is the primary entry point for the CSCM trajectory prediction pipeline. When invoked it automatically discovers all YAML job files in the configured job directory, evaluates each job's activation conditions, detects the tidal peak start times for every qualifying simulation date, runs the step-by-step vector trajectory integrations, and writes GPX track files and daily overview PNG maps to the configured output folder. By default the pipeline also performs a live CMEMS data update at the start of each run to ensure that current forecasts are fresh — making the command safe to schedule as a nightly cron job without any manual intervention.
+
+---
+
+## Basic usage
+
+```bash
+# Full pipeline: CMEMS data update followed by all active simulation jobs
+poetry run python -m cscm.simulation
+
+# Skip CMEMS data download — use existing local NetCDF files as-is
+poetry run python -m cscm.simulation --skip-update
+```
+
+### Available flags
+
+| Flag | Description |
+|------|-------------|
+| `--skip-update` | Skip the Copernicus CMEMS data download step. Useful during development when the local NetCDF file is already current. |
+| `--job-dir PATH` | Override the job file directory (default: `./data/simulation/jobs`). |
+| `--data-dir PATH` | Override the CMEMS forecast storage directory (default: `./data/cmems`). |
+| `--output-dir PATH` | Override the default output directory for results (default: `./data_store/predictions`). |
+| `--cron-install` | Generate a ready-to-install `/etc/cron.daily/` shell script and print installation instructions, then exit. |
+
+---
+
+## Execution flow
+
+<Steps>
+  <Step title="CMEMS data update (unless --skip-update)">
+    `CMEMSDataManager.update_cmems_data()` is called to check whether the local CMEMS NetCDF store is up to date with the latest Copernicus Marine forecast. If the update fails (network unavailable, API credentials missing, etc.) the pipeline continues with the most recently cached file and prepends a `[CMEMS Cache]` notice to the email subject line and body.
+  </Step>
+
+  <Step title="Locate latest forecast file">
+    The simulator scans the `--data-dir` for `.nc` files and selects the lexicographically last one (which corresponds to the most recent forecast download). If no NetCDF file exists the pipeline exits immediately with an error message.
+  </Step>
+
+  <Step title="Scan for job files">
+    Every `.yml` and `.yaml` file in `--job-dir` is collected. Files are processed in filesystem-sort order. If no job files are found the pipeline logs a warning and exits cleanly.
+  </Step>
+
+  <Step title="Parse and activate jobs">
+    Each job file is parsed by `parse_job_file()` into a `JobConfig` dataclass. Two activation guards are then evaluated:
+    - `active.if-on` — if `false`, the job is skipped and a log message is emitted.
+    - `active.if-now-in-range` — if `begin` and `end` are set and today's date falls outside that window, the job is skipped.
+
+    Only jobs that pass both guards proceed to the simulation step.
+  </Step>
+
+  <Step title="Expand simulation dates">
+    `parse_date_range_expr()` converts the `date.range` expression (e.g. `0d, 1d, 2d`) into a sorted, deduplicated list of `datetime` objects relative to the moment the script was run. Each date in the list receives its own independent set of trajectory calculations.
+  </Step>
+
+  <Step title="Tide peak detection">
+    For each simulation date:
+    1. The 24-hour UTC window is defined as `00:00:00–23:59:59` for that date.
+    2. `xr.open_dataset()` loads the selected NetCDF file.
+    3. `classify_grid_cells()` classifies every grid cell as Land (0), Boundary (1), or Water (2).
+    4. The `calc[].from` position is snapped to the nearest open-water (status 2) grid cell.
+    5. `find_daily_tide_peaks()` is called with that snapped position and the 24-hour window, returning a list of `{time, type, velocity_mps}` dicts.
+    6. Peaks are filtered to the `calc[].time.detect.types` list (`pec`, `pfc`, or both) and to the `in-range` local-time window defined in `tz`.
+  </Step>
+
+  <Step title="Trajectory simulation">
+    For each peak that passes all filters, `simulate_test_swim()` is called with the original (un-snapped) `calc[].from` position as the start, the detected UTC peak time, the configured `bearing` and `duration`. The function returns a `pd.DataFrame` trajectory logged at 60-second intervals.
+  </Step>
+
+  <Step title="GPX export">
+    `write_gpx_track()` serialises each trajectory DataFrame into a GPX 1.1 XML file. The output path is resolved by expanding the `{date}` and `{calc.id}` tokens in `results.files.gpx`. The `{calc.id}` itself may contain `{date}` and `{time}` (local start time as `HHMM`) tokens that are expanded before the filename is composed.
+  </Step>
+
+  <Step title="Overview map">
+    `plot_daily_simulations()` renders the daily fishbone map for all trajectories on this date and saves it as a PNG to the path resolved from `results.files.overview`. The map includes the CMEMS grid background, optional WKT coastline and obstruction overlays, all trajectory lines, backbone spine, 15-minute rib vectors, and a start-position star marker.
+  </Step>
+
+  <Step title="Email dispatch (if configured)">
+    If `results.mail` is present in the job config, a Jinja2 HTML template is rendered with the job metadata and calculation summaries, then dispatched via `send_simulation_email()` to the configured recipient list. The overview PNG is embedded as a CID inline image; GPX files are attached according to the `attach` mode. SMTP connection settings are read from environment variables (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`).
+  </Step>
+</Steps>
+
+---
+
+## Development tips
+
+<AccordionGroup>
+  <Accordion title="Iterate faster with --skip-update">
+    The CMEMS download step can take several minutes when the forecast window needs to be extended. During job file development — adjusting bearings, time windows, output paths, label formats — use `--skip-update` to bypass the download entirely and jump straight to simulation:
+
+    ```bash
+    poetry run python -m cscm.simulation --skip-update
+    ```
+
+    Re-enable the update (by omitting the flag) when you want fresh current data for a real pre-swim planning session.
+  </Accordion>
+
+  <Accordion title="Disable a job without deleting it">
+    Set `active.if-on: false` in the job YAML to skip that job on every run without removing the file. This is useful for archiving past swim scenarios or staging a new job that isn't ready yet:
+
+    ```yaml
+    active:
+      if-on: false   # Job is parked — will not execute
+    ```
+  </Accordion>
+
+  <Accordion title="Gate production jobs to their relevant window">
+    Pair `active.if-now-in-range` with a realistic preparation window so the job only executes during the days leading up to the planned swim. This prevents stale job files from cluttering output directories all year:
+
+    ```yaml
+    active:
+      if-on: true
+      if-now-in-range:
+        begin: 2027-10-04   # Start running 7 days before the swim window
+        end: 2027-10-11     # Stop the day after the last possible swim date
+    ```
+  </Accordion>
+
+  <Accordion title="Install as a nightly cron job">
+    The `--cron-install` flag writes a ready-to-use shell script to `/tmp/cscm_daily_prediction` and prints the exact commands needed to install it as a `/etc/cron.daily/` task:
+
+    ```bash
+    poetry run python -m cscm.simulation --cron-install
+    ```
+
+    Follow the printed instructions to move and permission the file. Once installed, the full pipeline (CMEMS update + all active jobs) runs automatically each night at the system's `cron.daily` trigger time (typically 03:00).
+  </Accordion>
+</AccordionGroup>
+
+<Note>
+  Simulation date offsets `0d`, `1d`, `2d` are always resolved **relative to the moment the script is run**, not a fixed anchor date. A job with `date.range: 0d, 1d, 2d` scheduled to run nightly will therefore always produce simulations for tonight, tomorrow, and the day after — automatically advancing by one day with each execution without any reconfiguration.
+</Note>

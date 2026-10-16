@@ -1,0 +1,240 @@
+---
+title: "Wellknown Positions, Swimmers, and Current Models"
+sidebarTitle: "Wellknown"
+description: "cscm.wellknown provides built-in LabeledPosition coordinates for North Sea swim locations, verified Swimmer profiles with speed functions, and helper factories for speed/jitter functions."
+---
+
+`cscm.wellknown` is a batteries-included registry of ready-to-use instances of positions, swimmers, and current models. Every entry can be referenced by its string key in both Python code and YAML job files, letting you build simulations and route analyses without manually specifying coordinates or swimmer behavioural parameters.
+
+---
+
+## POSITIONS dict
+
+`POSITIONS` is a `dict[str, LabeledPosition]` of well-known geographic coordinates in the North Sea swim corridor, covering Belgian and English coastal start/finish points as well as cross-Channel waypoints used for mid-swim navigation.
+
+```python
+from cscm.wellknown import POSITIONS
+
+pos = POSITIONS["KOKSIJDE"]
+print(pos)          # → "Koksijde"
+print(pos.lat)      # → 51.1194
+print(pos.lon)      # → 2.62575
+```
+
+### Belgian coast (start/finish points)
+
+| Key | Label | Latitude | Longitude |
+|-----|-------|----------|-----------|
+| `KOKSIJDE` | Koksijde | 51.11940 | 2.62575 |
+| `KOKSIJDE_PROXY` | Koksijde Proxy | 51.1345606 | 2.6101006 |
+| `NIEUWPOORT` | Nieuwpoort | 51.15667 | 2.72333 |
+| `NIEUWPOORT_PROXY` | Nieuwpoort Proxy | 51.1711833 | 2.707728 |
+| `BREDENE_POST4` | Bredene Reddingspost 4 | 51.25743146659003 | 2.9704106714146716 |
+| `BREDENE_POST4_PROXY` | Bredene Reddingspost 4 Proxy | 51.2729652 | 2.9560906 |
+
+### English coast (finish/start points)
+
+| Key | Label | Latitude | Longitude |
+|-----|-------|----------|-----------|
+| `DOVER` | Dover, Shakespeare Beach | 51.1132473 | 1.3060091 |
+| `DOVER_PROXY` | Dover Proxy | 51.0976191 | 1.3204159 |
+| `KINGSGATE` | Kingsgate | 51.3836514 | 1.4451754 |
+| `KINGSGATE_PROXY` | Kingsgate Proxy | 51.3914205 | 1.4707437 |
+| `ORFORD_NESS` | Orford Ness | 52.08333 | 1.58333 |
+| `ORFORD_NESS_PROXY` | Orford Ness Proxy | 52.0736728 | 1.6081401 |
+
+### French coast
+
+| Key | Label | Latitude | Longitude |
+|-----|-------|----------|-----------|
+| `CAP_BLANC_NEZ` | Cap Blanc Nez | 50.9202391 | 1.6962061 |
+| `CAP_BLANC_NEZ_PROXY` | Cap Blanc Nez Proxy | 50.9298626 | 1.6716473 |
+
+### Channel waypoints
+
+Fractional waypoints along three longitudinal bands — West (W), Middle (M), and East (E) — used to express intermediate positions on a crossing route.
+
+| Key | Label | Latitude | Longitude |
+|-----|-------|----------|-----------|
+| `W_1_3` | W 1/3 | 50.9823472 | 1.5585258 |
+| `W_1_2` | W 1/2 | 51.0096289 | 1.5028793 |
+| `W_2_3` | W 2/3 | 51.0374139 | 1.4459964 |
+| `M_1_6` | M 1/6 | 51.200747 | 2.4790661 |
+| `M_1_3` | M 1/3 | 51.2410691 | 2.2672317 |
+| `M_1_2` | M 1/2 | 51.2749006 | 2.0602783 |
+| `M_2_3` | M 2/3 | 51.3099446 | 1.857809 |
+| `M_5_6` | M 5/6 | 51.3486548 | 1.6391558 |
+| `E_1_6` | E 1/6 | 51.3109382 | 2.5389216 |
+| `E_1_3` | E 1/3 | 51.4696367 | 2.3450114 |
+| `E_1_2` | E 1/2 | 51.6252596 | 2.1533663 |
+| `E_2_3` | E 2/3 | 51.7792136 | 1.9593153 |
+| `E_5_6` | E 5/6 | 51.9317262 | 1.7656382 |
+
+<Note>
+"Proxy" positions are slightly offset from the true geographic landmark and are used as safe open-water simulation start/end points that avoid placing a trajectory precisely on a coastline or harbour wall.
+</Note>
+
+---
+
+## SWIMMERS dict
+
+`SWIMMERS` is a `dict[str, Swimmer]` of pre-configured swimmer profiles. Each entry captures a named athlete's typical speed function and optional jitter characteristics for simulation purposes.
+
+```python
+from cscm.wellknown import SWIMMERS
+
+swimmer = SWIMMERS["MBL_MIDR"]
+print(swimmer.name)          # → "Marieke Blomme"
+print(swimmer.speed_fn(0))   # → 1.0  (m/s)
+```
+
+### MBL_MIDR — Marieke Blomme (mid-range)
+
+| Parameter | Value |
+|-----------|-------|
+| `name` | `"Marieke Blomme"` |
+| `speed_fn` | `constant(1.0)` — 1.0 m/s = 3.6 km/h |
+| `speed_jitter_fn` | `None` |
+| `heading_jitter_fn` | `None` |
+
+Mid-range race profile; constant 1.0 m/s with no randomness. Suitable for optimistic planning scenarios or sea-state bracket analysis.
+
+### MBL_EXTR — Marieke Blomme (extreme distance)
+
+| Parameter | Value |
+|-----------|-------|
+| `name` | `"Marieke Blomme"` |
+| `speed_fn` | `constant(0.833)` — approx. 3.0 km/h average |
+| `speed_jitter_fn` | `None` |
+| `heading_jitter_fn` | `None` |
+
+Ultra-endurance profile; reduced pacing for very long crossings where sustained effort replaces sprint capacity.
+
+### MPO — Marc Portier
+
+| Parameter | Value |
+|-----------|-------|
+| `name` | `"Marc Portier"` |
+| `speed_fn` | `constant(0.91)` — 0.91 m/s |
+| `speed_jitter_fn` | `random_jitter(0.05, max=0.3)` — ±5% jitter, capped at 0.3 m/s above base |
+| `heading_jitter_fn` | `random_jitter(1.0, base=2.0)` — ±2° heading deviation |
+
+Realistic recreational swimmer profile with stochastic speed and heading variation to model imperfect navigation and effort fluctuation.
+
+---
+
+## CURRENT_MODELS dict
+
+`CURRENT_MODELS` is a `dict[str, CurrentsModel]` of pre-configured environmental current models.
+
+```python
+from cscm.wellknown import CURRENT_MODELS
+
+model = CURRENT_MODELS["BCH_UNIFORM"]
+```
+
+### BCH_UNIFORM
+
+A `UniformCurrentsModel()` instantiated with its default parameters. The model is structurally complete (direction, peak speed, tidal period, lunar period, and lunar factor are all wired up) but the internal simulation logic is not yet fully implemented — it currently returns a zero vector. It serves as a placeholder for testing the simulation pipeline without a live CMEMS data feed.
+
+See [`cscm.current.current_model`](/reference/api-currents#uniformcurrentsmodel) for full parameter documentation.
+
+---
+
+## Helper functions
+
+### `constant()`
+
+```python
+constant(value: float) -> Callable[[int], float]
+```
+
+Returns a closure that always produces `value`, regardless of how much time has elapsed. This is the standard way to create a constant-speed `speed_fn` for a `Swimmer`.
+
+<ParamField path="value" type="float" required>
+  The fixed value to return on every call.
+</ParamField>
+
+**Returns:** `Callable[[int], float]` — a function `f(time_s)` that always returns `value`.
+
+```python
+from cscm.wellknown import constant
+
+speed_fn = constant(1.0)  # 1.0 m/s at all times
+assert speed_fn(0) == 1.0
+assert speed_fn(3600) == 1.0
+```
+
+---
+
+### `random_jitter()`
+
+```python
+random_jitter(
+    percentage: float,
+    base: float = None,
+    max: float = None,
+) -> Callable[[int, float], float]
+```
+
+Returns a jitter function with the signature `f(time_s: int, value: float) -> float`. On each call the jitter is computed as:
+
+```
+jittered = value * (1 + random.uniform(-percentage, percentage))
+```
+
+If `base` is set, `value` is replaced by `base` before applying the percentage jitter. If `max` is set, the result is capped: `min(jittered, max)`.
+
+<ParamField path="percentage" type="float" required>
+  Fractional jitter amplitude, e.g. `0.05` for ±5%.
+</ParamField>
+
+<ParamField path="base" type="float">
+  If provided, overrides the `value` argument passed to the returned function. Useful for heading jitter where you want a fixed absolute deviation rather than a fraction of the current heading.
+</ParamField>
+
+<ParamField path="max" type="float">
+  Upper cap applied to the absolute jittered result. Useful to prevent unrealistically large speed spikes.
+</ParamField>
+
+**Returns:** `Callable[[int, float], float]`
+
+```python
+from cscm.wellknown import random_jitter
+
+# Speed jitter: ±5% of current speed, capped at 0.3 m/s
+speed_jitter = random_jitter(0.05, max=0.3)
+speed = speed_jitter(time_s=1800, value=1.0)
+
+# Heading jitter: always ±1.0 * base (i.e. ±2°), no cap
+heading_jitter = random_jitter(1.0, base=2.0)
+deviation_deg = heading_jitter(time_s=900, value=316.0)
+```
+
+---
+
+## Creating custom swimmers
+
+You can compose `constant` and `random_jitter` with any callable to build a fully custom `Swimmer`:
+
+```python
+from cscm.model import Swimmer
+from cscm.wellknown import constant, random_jitter
+
+def fatigue_speed(time_s: int) -> float:
+    """Decays from 1.0 m/s at start to 0.75 m/s after 8 hours."""
+    decay = max(0.75, 1.0 - (time_s / 28800) * 0.25)
+    return decay
+
+my_swimmer = Swimmer(
+    name="Custom Swimmer",
+    speed_fn=fatigue_speed,
+    speed_jitter_fn=random_jitter(0.03),
+    heading_jitter_fn=random_jitter(0.5, base=1.5),
+)
+```
+
+Any Python callable matching the expected signature works:
+- `speed_fn(time_s: int) -> float`
+- `speed_jitter_fn(time_s: int, value: float) -> float`
+- `heading_jitter_fn(time_s: int, value: float) -> float`

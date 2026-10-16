@@ -1,72 +1,74 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mintlify Starter Kit",
+  "name": "Open Waters",
+  "theme": "luma",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#38bdf8",
+    "light": "#05122a",
+    "dark": "#0485c8"
   },
-  "favicon": "/favicon.svg",
-  "navigation": {
-    "pages": [
-      {
-        "group": "Getting Started",
-        "pages": [
-          "index",
-          "quickstart"
-        ]
-      }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
+  "favicon": "https://media.brand.dev/ded66c9d-92cf-4cfc-937e-fd28e5488d9c.png",
   "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:support@mintlify.com"
-      }
-    ],
     "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://app.mintlify.com"
+      "type": "github",
+      "href": "https://github.com/marc-portier/cscm"
     }
-  },
-  "contextual": {
-    "options": [
-      "copy",
-      "view",
-      "chatgpt",
-      "claude",
-      "perplexity",
-      "mcp",
-      "cursor",
-      "vscode"
-    ]
   },
   "footer": {
     "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
+      "github": "https://github.com/marc-portier/cscm"
     }
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "configuration"
+            ]
+          },
+          {
+            "group": "Concepts",
+            "pages": [
+              "concepts/kinematics-model",
+              "concepts/tidal-analysis",
+              "concepts/moon-cycles"
+            ]
+          },
+          {
+            "group": "Data Sources",
+            "pages": [
+              "data/cmems-retrieval",
+              "data/cmems-analysis",
+              "data/tide-stations"
+            ]
+          },
+          {
+            "group": "Simulation",
+            "pages": [
+              "simulation/overview",
+              "simulation/job-files",
+              "simulation/running-simulations",
+              "simulation/output-formats"
+            ]
+          },
+          {
+            "group": "Reference",
+            "pages": [
+              "reference/wellknown",
+              "reference/api-model",
+              "reference/api-currents",
+              "reference/api-tide",
+              "reference/api-moon"
+            ]
+          }
+        ]
+      }
+    ]
   }
 }

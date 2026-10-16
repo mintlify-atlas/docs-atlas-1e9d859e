@@ -1,0 +1,126 @@
+---
+title: "Moon Cycles and Tidal Period Calculations"
+sidebarTitle: "Moon Cycles"
+description: "CSCM uses NASA JPL ephemeris data via skyfield to compute synodic months and semi-diurnal tidal periods, which partition CMEMS data downloads by lunar cycle."
+---
+
+The amplitude of tidal currents in the North Sea varies significantly over the ~29.5-day synodic month. During Spring tides (near New Moon and Full Moon) peak current speeds can be double those observed during Neap tides (near the quarter phases). For the PCA tidal analysis in CSCM to produce scientifically meaningful Spring/Neap peak comparisons, each CMEMS NetCDF download must contain **one complete Spring-Neap cycle** — neither truncated partway through a Spring tide nor spanning two different lunar cycles that would mix their amplitude envelopes. CSCM therefore partitions all data downloads by **new-moon cycle**: each file runs from one New Moon to the next, with asymmetric margins applied around the boundaries to accommodate tidal lag effects. The boundaries between cycles are computed with high-precision astronomical ephemeris data rather than a fixed 29.5-day approximation, because the actual synodic month varies by up to ±14 hours depending on lunar orbital eccentricity.
+
+Moon phase calculations are implemented in `src/cscm/moon/phases.py`.
+
+---
+
+## Astronomical Calculations
+
+The module uses the **`skyfield`** Python library backed by the **NASA JPL DE421 ephemeris** (`de421.bsp`) — a planetary ephemeris covering 1900–2050 with sub-arcsecond accuracy. Skyfield's `almanac.find_discrete()` function scans the requested time range at high temporal resolution to pinpoint the exact moment each lunar phase transition occurs.
+
+<Note>
+The ephemeris file `de421.bsp` (~17 MB) is downloaded automatically by `skyfield` on first use and cached locally. No manual download or configuration is required.
+</Note>
+
+---
+
+### `get_phases(t0: datetime, t1: datetime) -> list`
+
+Returns a list of all major lunar phase events between `t0` and `t1`.
+
+Each element of the returned list is a tuple:
+
+```
+(datetime_utc, phase_index, phase_name, angle_deg)
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `datetime_utc` | `datetime` | Exact UTC moment of the phase event. |
+| `phase_index` | `int` | Phase index: `0` = New Moon, `1` = First Quarter, `2` = Full Moon, `3` = Last Quarter. |
+| `phase_name` | `str` | Human-readable name: `"new moon"`, `"1st qrtr"`, `"full moon"`, `"last qrtr"`. |
+| `angle_deg` | `int` | Ecliptic phase angle: `0°`, `90°`, `180°`, `270°`. |
+
+The function translates `datetime` objects into Skyfield's internal timescale, delegates to `almanac.moon_phases(eph)` for detection, then maps the raw Skyfield results back to plain Python tuples.
+
+---
+
+### `get_newmoon_cycles(t0: datetime, t1: datetime) -> list[Mooncycle]`
+
+Builds a list of complete new-moon-to-new-moon cycles between `t0` and `t1`. Internally calls `get_phases()` and filters for `phase_index == 0` to extract all New Moon events, then pairs consecutive New Moons into cycles.
+
+For each cycle the function computes:
+
+**Lunar period** — the actual duration between the two consecutive New Moon events:
+```
+lunarperiod_d = (end_dt − start_dt).total_seconds() / 86400
+```
+
+**Tidal period** — derived from the distinction between solar days and lunar days:
+```
+lunarperiod_ld  = lunarperiod_d − 1
+tidalperiod_d   = lunarperiod_d / (2 × lunarperiod_ld)
+tidalperiod_h   = tidalperiod_d × 24
+```
+
+The key insight is that a **lunar day** (the time between successive moonrises at a fixed point) is approximately 24 hours 50 minutes, which is about 1 solar day longer than the lunar orbital period. Over one synodic month of ~29.53 solar days there are only ~28.53 lunar days (`lunarperiod_ld = lunarperiod_d − 1`). Because the semi-diurnal tide completes **two full cycles per lunar day**, the tidal period is `lunarperiod_d / (2 × lunarperiod_ld)` days, or approximately **12 hours 25 minutes**. Using the actual measured lunar period rather than a fixed 29.5-day constant keeps the tidal period accurate to within seconds, which matters when calibrating the relative-time `CurrentsModel` to wall-clock simulation time.
+
+---
+
+## Type Alias
+
+```python
+Mooncycle = tuple[datetime, datetime, float, float]
+```
+
+A simple named type alias for the tuples returned by `get_newmoon_cycles()`:
+
+| Position | Type | Description |
+|---|---|---|
+| `[0]` | `datetime` | Start of the cycle — the exact UTC moment of the New Moon. |
+| `[1]` | `datetime` | End of the cycle — the exact UTC moment of the next New Moon. |
+| `[2]` | `float` | `lunarperiod_d` — duration of this synodic month in solar days (~29.27 to ~29.83). |
+| `[3]` | `float` | `tidalperiod_h` — derived semi-diurnal tidal period in hours (~12.38 to ~12.47). |
+
+---
+
+## Data Partitioning
+
+During CMEMS data management, `CMEMSDataManager.update_cmems_data()` calls `get_newmoon_cycles()` to determine exactly which lunar cycles need to be downloaded or updated. Each cycle boundary is then extended with asymmetric margins:
+
+- **−2 days** on the leading edge (before the New Moon)
+- **+5 days** on the trailing edge (after the next New Moon)
+
+These margins capture the **tidal age** phenomenon: the Spring tide current peak does not occur at the exact moment of the New or Full Moon, but lags behind by one to three days depending on local bathymetry and coastal geometry. Without the trailing +5-day buffer, the strongest Spring current peaks of a cycle could be clipped from the downloaded window, causing the PCA analysis to underestimate the Spring amplitude envelope and miscalibrate the `begin_peak_ref` / `end_peak_ref` calibration anchors stored in each cell's `_analysis.json`.
+
+---
+
+## Code Example
+
+```python
+from cscm.moon.phases import get_phases, get_newmoon_cycles
+from datetime import datetime
+
+start = datetime(2026, 8, 1)
+end = datetime(2026, 10, 31)
+
+# All major lunar phase events in the range
+phases = get_phases(start, end)
+for dt, idx, name, angle in phases:
+    print(f"{dt.strftime('%Y-%m-%d %H:%M')} UTC — {name} ({angle}°)")
+
+# New-moon-bounded tidal cycles with computed tidal period
+cycles = get_newmoon_cycles(start, end)
+for s, e, period_d, tidal_h in cycles:
+    print(f"Cycle: {s.date()} → {e.date()} | {period_d:.2f} days | {tidal_h:.4f}h tidal period")
+```
+
+Example output (approximate):
+
+```
+2026-08-28 04:57 UTC — new moon (0°)
+2026-09-05 01:09 UTC — 1st qrtr (90°)
+2026-09-12 02:05 UTC — full moon (180°)
+2026-09-19 19:43 UTC — last qrtr (270°)
+2026-09-26 19:49 UTC — new moon (0°)
+...
+
+Cycle: 2026-08-28 → 2026-09-26 | 29.62 days | 12.4228h tidal period
+Cycle: 2026-09-26 → 2026-10-26 | 29.51 days | 12.4209h tidal period
+```

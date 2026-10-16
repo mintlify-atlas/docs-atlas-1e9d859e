@@ -1,47 +1,150 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Get Started with CSCM in Four Steps"
+sidebarTitle: "Quickstart"
+description: "Install CSCM with Poetry, configure CMEMS credentials, download tidal data, and run your first swim trajectory simulation in under 10 minutes."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
-
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
-
-## Prerequisites
-
-Before you begin, you must have:
-
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
-
-## Get started
+By the end of this guide you will have a fully working CSCM installation connected to the Copernicus Marine Service, a local NetCDF tidal current dataset downloaded and analysed per lunar cycle, and a trajectory simulation run against real forecast data. No prior knowledge of oceanographic data formats is required — CSCM handles the data pipeline end-to-end.
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
+
+  <Step title="Install Poetry and clone the repository">
+    CSCM uses [Poetry](https://python-poetry.org/) for dependency management. After installing Poetry (see the [official installer docs](https://python-poetry.org/docs/#installing-with-the-official-installer)), clone the repository and set up the virtual environment:
 
     ```bash
-    npm install your-package
+    git clone https://github.com/marc-portier/cscm.git
+    cd cscm
+    poetry config virtualenvs.in-project true --local
+    poetry env use python3.14
+    poetry install
     ```
+
+    Using `virtualenvs.in-project true` keeps the `.venv` folder inside the project directory, which makes IDE integration and reproducible deploys easier. CSCM requires Python 3.14 or later.
   </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
+
+  <Step title="Configure your environment">
+    Copy the provided example file to create your local `.env`:
 
     ```bash
-    your-cli init
+    cp .env.example .env
     ```
-  </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
+
+    Open `.env` in your editor and fill in the following variables:
+
+    | Variable | Description |
+    |---|---|
+    | `COPERNICUSMARINE_SERVICE_USERNAME` | Your Copernicus Marine Service username (email address) |
+    | `COPERNICUSMARINE_SERVICE_PASSWORD` | Your Copernicus Marine Service password |
+    | `CMEMS_DATA_FOLDER` | Local path where downloaded NetCDF files are stored (defaults to `./data_store/` relative to `retrieve.py`) |
+    | `CMEMS_GEO_EXTENT` | Bounding box for data downloads: `min_lon,max_lon,min_lat,max_lat` (see example below) |
+    | `MDK_USERNAME` | Meetnet Vlaamse Banken API username (required for water level / tide gauge features) |
+    | `MDK_PASSWORD` | Meetnet Vlaamse Banken API password |
+
+    A typical North Sea bounding box for the Belgian/English cross-channel area looks like:
 
     ```bash
-    your-cli start
+    CMEMS_GEO_EXTENT=0.469393,3.571506,50.729498,52.578752
     ```
+
+    Register for a free Copernicus Marine account at [data.marine.copernicus.eu/register](https://data.marine.copernicus.eu/register) if you haven't already.
   </Step>
+
+  <Step title="Download and analyse tidal current data">
+    Run the CMEMS data pipeline. This single command performs two sequential operations: it downloads 1.5 km / 15-minute resolution 2D hydrodynamic current forecast data from Copernicus Marine Service as NetCDF files (one file per lunar cycle, with a 2-day leading margin and 5-day trailing margin to capture tidal age lag), and then runs an adaptive per-cell PCA analysis on every downloaded file to identify each grid cell's principal tidal flow axis, detect slack water reversals, and pinpoint peak ebb/flood current times — writing the results to `_analysis.json` files alongside each NetCDF and generating diagnostic verification plots.
+
+    ```bash
+    poetry run python -m cscm.current.cmems
+    ```
+
+    On a first run this may take several minutes as multiple lunar cycles are downloaded. Subsequent runs are incremental — only missing or incomplete forecast cycles are fetched.
+
+    Available flags for advanced usage:
+
+    | Flag | Effect |
+    |---|---|
+    | `--skip-update` | Skip the download step; re-run analysis only |
+    | `--skip-analysis` | Download data but skip PCA analysis |
+    | `--force` | Force re-analysis even where cached `_analysis.json` files exist |
+    | `--limit N` | Restrict processing to the N most recent lunar cycles |
+    | `--clean all\|analysis\|none` | Wipe storage before running (`all` removes NetCDF + analysis, `analysis` removes only analysis artifacts) |
+  </Step>
+
+  <Step title="Write a job file and run the simulator">
+    Simulation jobs are defined as YAML files placed in `./data/simulation/jobs/`. Here is a minimal job that simulates a 6-hour test swim from Koksijde, automatically detecting Peak Ebb Current (PEC) start times within a daytime window:
+
+    ```yaml
+    title: Koksijde Test Swim — September 2026
+    tz: Europe/Brussels
+
+    active:
+      if-on: true
+
+    date:
+      range: 0d, 1d, 2d
+
+    calc:
+      - id: "{date}-koksijde-{time}-pec"
+        from: KOKSIJDE
+        by: MBL_MIDR
+        bearing: 316
+        duration: 6h
+        time:
+          detect:
+            types: pec
+            in-range: 05:00-17:00
+
+    results:
+      folder: /tmp/results/koksijde/{now}/
+    ```
+
+    `from` and `by` reference built-in keys from `wellknown.py` — `KOKSIJDE` is the Koksijde beach start position, and `MBL_MIDR` is the Marieke Blomme swimmer profile at a steady 1.0 m/s (3.6 km/h). The `time.detect` block automatically finds Peak Ebb Current times within the given local time window and runs a separate simulation for each match.
+
+    Once your job file is saved, run the simulator:
+
+    ```bash
+    poetry run python -m cscm.simulation
+    ```
+
+    By default, the simulator updates the CMEMS data store before running jobs. Results (PNG overview maps, GPX track files) are written to the folder specified in `results.folder`.
+  </Step>
+
 </Steps>
 
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
+## Using the Python API Directly
 
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
+You can also drive simulations programmatically without the YAML job runner. The example below loads a downloaded CMEMS NetCDF dataset, wraps it in a `CmemsForecastCurrentsModel`, and calls `simulate_test_swim` to produce a pandas `DataFrame` of the predicted trajectory:
+
+```python
+from cscm.wellknown import POSITIONS, SWIMMERS
+from cscm.simulation.predict import simulate_test_swim, CmemsForecastCurrentsModel
+import xarray as xr
+from datetime import datetime, timezone
+
+# Load a downloaded CMEMS NetCDF dataset
+ds = xr.open_dataset("/path/to/cmems_data.nc")
+model = CmemsForecastCurrentsModel(ds)
+
+start = POSITIONS["KOKSIJDE"]
+start_time = datetime(2026, 9, 15, 7, 0, tzinfo=timezone.utc)
+
+df = simulate_test_swim(
+    model=model,
+    start_pos=start,
+    start_time=start_time,
+    heading_deg=316.0,
+    duration_hours=6.0,
+)
+print(df.head())
+```
+
+`POSITIONS["KOKSIJDE"]` returns a `LabeledPosition` with the coordinates `lat=51.11940, lon=2.62575`. You can substitute any of the other built-in positions (e.g. `"NIEUWPOORT"`, `"DOVER"`, `"KINGSGATE"`, `"ORFORD_NESS"`) or construct a `Position` directly from `cscm.model`.
+
+<Tip>
+  When iterating on job definitions or analysis parameters, skip the CMEMS download step to save time:
+
+  ```bash
+  poetry run python -m cscm.simulation --skip-update
+  ```
+
+  This is safe as long as your local data store already contains recent enough forecast files for the dates your jobs target.
 </Tip>

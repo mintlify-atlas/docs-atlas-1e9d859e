@@ -1,0 +1,134 @@
+---
+title: "cscm.moon.phases API Reference: Lunar Cycle Calculations"
+sidebarTitle: "cscm.moon"
+description: "API reference for cscm.moon.phases — get_phases and get_newmoon_cycles use NASA JPL DE421 ephemeris to compute lunar phases and synodic tidal periods."
+---
+
+`cscm.moon.phases` uses the `skyfield` astronomy library backed by the NASA JPL DE421 ephemeris to compute precise moon phase times with sub-minute accuracy. These phase events serve two roles in the CSCM toolkit: partitioning CMEMS data downloads into discrete lunar cycles (so each NetCDF file aligns cleanly with a new-moon-to-new-moon window), and deriving the local semi-diurnal tidal period for each cycle (which varies slightly from one synodic month to the next and is used to parameterise the tidal analysis in `cscm.current.cmems.analyse`).
+
+---
+
+## Type alias
+
+### `Mooncycle`
+
+```python
+Mooncycle = tuple[datetime, datetime, float, float]
+# (start_dt, end_dt, lunarperiod_d, tidalperiod_h)
+```
+
+A 4-tuple representing a single new-moon-to-new-moon lunar cycle:
+
+| Index | Name | Type | Description |
+|-------|------|------|-------------|
+| 0 | `start_dt` | `datetime` (UTC) | Datetime of the opening new moon |
+| 1 | `end_dt` | `datetime` (UTC) | Datetime of the closing new moon |
+| 2 | `lunarperiod_d` | `float` | Duration of the cycle in solar days (~29.53) |
+| 3 | `tidalperiod_h` | `float` | Derived semi-diurnal tidal period in hours (~12.42) |
+
+---
+
+## Functions
+
+### `get_phases()`
+
+```python
+def get_phases(t0: datetime, t1: datetime) -> list
+```
+
+Returns all four principal lunar phase events between `t0` and `t1`, in chronological order.
+
+<ParamField path="t0" type="datetime" required>
+  Start of the search window (UTC). Timezone-naive datetimes are interpreted as UTC by Skyfield.
+</ParamField>
+
+<ParamField path="t1" type="datetime" required>
+  End of the search window (UTC).
+</ParamField>
+
+**Returns:** `list` of 4-tuples `(datetime_utc, phase_index, phase_name, angle_deg)`:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `datetime_utc` | `datetime` (UTC) | Precise time of the phase event |
+| `phase_index` | `int` | Phase identifier: `0`=new moon, `1`=first quarter, `2`=full moon, `3`=last quarter |
+| `phase_name` | `str` | Human-readable name: `"new moon"`, `"1st qrtr"`, `"full moon"`, `"last qrtr"` |
+| `angle_deg` | `float` | Ecliptic longitude separation angle: `0°`, `90°`, `180°`, `270°` |
+
+---
+
+### `get_newmoon_cycles()`
+
+```python
+def get_newmoon_cycles(t0: datetime, t1: datetime) -> list[Mooncycle]
+```
+
+Extracts all new-moon-to-new-moon cycle intervals between `t0` and `t1`. Internally calls `get_phases()`, filters for `phase_index == 0` events, and constructs a `Mooncycle` tuple for each consecutive pair of new moons.
+
+<ParamField path="t0" type="datetime" required>
+  Start of the search window (UTC). The function finds the first new moon on or after `t0`.
+</ParamField>
+
+<ParamField path="t1" type="datetime" required>
+  End of the search window (UTC). The last complete cycle returned has its `end_dt` on or before `t1`. A cycle is only included if both its opening and closing new moons fall within `[t0, t1]`.
+</ParamField>
+
+**Returns:** `list[Mooncycle]` — ordered chronologically.
+
+#### Tidal period derivation
+
+The semi-diurnal tidal period is derived from the lunar (synodic) period using the relationship between solar days and lunar days:
+
+```
+lunarperiod_d  = (end_dt − start_dt).total_seconds() / 86400
+lunarperiod_ld = lunarperiod_d − 1          # lunar days = solar days − 1
+tidalperiod_d  = lunarperiod_d / (2 × lunarperiod_ld)
+tidalperiod_h  = tidalperiod_d × 24
+```
+
+The intuition: the Moon makes one less orbit relative to Earth per synodic month than the number of solar days (because Earth itself orbits the Sun). This reduces the effective daily tidal cycle count, pushing the semi-diurnal period slightly above 12 hours.
+
+---
+
+## Helper function
+
+### `datetime_to_ts()`
+
+```python
+def datetime_to_ts(dt: datetime)
+```
+
+Converts a Python `datetime` to a Skyfield `Time` object suitable for use with Skyfield's almanac functions.
+
+<ParamField path="dt" type="datetime" required>
+  Any Python `datetime`. The UTC year, month, day, hour, minute, and second components are extracted and passed to `timescale.utc()`.
+</ParamField>
+
+**Returns:** `skyfield.timelib.Time`
+
+---
+
+## Example
+
+```python
+from cscm.moon.phases import get_phases, get_newmoon_cycles
+from datetime import datetime
+
+# List all moon phases over a short window
+phases = get_phases(datetime(2026, 8, 1), datetime(2026, 9, 30))
+for dt, idx, name, angle in phases:
+    print(f"{dt.strftime('%Y-%m-%d %H:%M UTC')}  {name:<12}  {angle:5.1f}°")
+
+# Retrieve new-moon-to-new-moon cycles
+cycles = get_newmoon_cycles(datetime(2026, 8, 1), datetime(2026, 11, 1))
+for start, end, period_d, tidal_h in cycles:
+    print(f"{start.date()} → {end.date()} | {period_d:.3f}d | {tidal_h:.4f}h")
+
+# Example output:
+# 2026-08-24 → 2026-09-22 | 29.531d | 12.4206h
+# 2026-09-22 → 2026-10-21 | 29.527d | 12.4204h
+```
+
+<Note>
+The `de421.bsp` JPL ephemeris file (~17 MB) is automatically downloaded by `skyfield` on first use and cached in the current working directory. On subsequent runs the cached file is used directly. If the file is missing (e.g. in a fresh container environment), Skyfield will re-download it from the internet, so ensure network access is available on first run.
+</Note>

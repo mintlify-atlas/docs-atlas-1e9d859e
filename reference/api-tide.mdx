@@ -1,0 +1,465 @@
+---
+title: "cscm.tide API Reference: HicClient and MdkClient"
+sidebarTitle: "cscm.tide"
+description: "API reference for HicClient (HIC KiWIS water level forecasts) and MdkClient (Meetnet Vlaamse Banken REST API) — methods, parameters, return types, and station constants."
+---
+
+`cscm.tide` provides two independent client modules for Belgian coastal water level data. `hic.py` wraps the Flemish Hydro Information Centre (HIC) KiWIS API via the `pywaterinfo` library, giving access to operational surge forecasts, astronomical tide predictions, and HW/LW extremes for the three canonical coastal stations. `mdk.py` wraps the Meetnet Vlaamse Banken (MDK) REST API v2 directly using `requests`, giving access to observed water-level time series for a broader set of six coastal monitoring stations including the offshore Westhinder platform.
+
+Both modules express water levels in metres TAW (Tweede Algemene Waterpassing, the Belgian vertical datum), and both return results as `pandas.DataFrame` objects for seamless integration with analysis and plotting workflows.
+
+---
+
+## HIC module — `cscm.tide.hic`
+
+### HicStation
+
+```python
+@dataclass(frozen=True)
+class HicStation:
+    code: str
+    name: str
+    station_id: str
+    station_no: str
+    latitude: float
+    longitude: float
+    ts_forecast_5min: str
+    ts_astro_5min: str
+    ts_forecast_hw: str
+    ts_forecast_lw: str
+    ts_astro_hw: str
+    ts_astro_lw: str
+    ts_observed_5min: Optional[str] = None
+```
+
+Immutable dataclass describing a HIC coastal forecasting station and the KiWIS time-series IDs required to retrieve each data product.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `code` | str | Canonical 3-letter code (e.g. `"OST"`, `"NPT"`, `"ZLD"`) |
+| `name` | str | Human-readable station name |
+| `station_id` | str | HIC numerical station identifier |
+| `station_no` | str | Official HIC station number (e.g. `"OST-1069"`) |
+| `latitude` | float | WGS84 latitude |
+| `longitude` | float | WGS84 longitude |
+| `ts_forecast_5min` | str | KiWIS ts_id for the operational surge+tide forecast (KT-Last), 5-min resolution, m TAW |
+| `ts_astro_5min` | str | KiWIS ts_id for the astronomical tide prediction (Astro.05), 5-min resolution, m TAW |
+| `ts_forecast_hw` | str | KiWIS ts_id for forecast High Water extremes (KT-HW) |
+| `ts_forecast_lw` | str | KiWIS ts_id for forecast Low Water extremes (KT-LW) |
+| `ts_astro_hw` | str | KiWIS ts_id for astronomical High Water extremes (Astro.HW) |
+| `ts_astro_lw` | str | KiWIS ts_id for astronomical Low Water extremes (Astro.LW) |
+| `ts_observed_5min` | str \| None | KiWIS ts_id for 5-min gauge observations (O.05); `None` if unavailable |
+
+---
+
+### HIC_COASTAL_STATIONS
+
+```python
+HIC_COASTAL_STATIONS: Dict[str, HicStation]
+```
+
+The canonical registry of HIC stations. All three Flemish coastal measurement and forecasting locations are included:
+
+| Key(s) | Code | Name | Latitude | Longitude |
+|--------|------|------|----------|-----------|
+| `"NPT"` | NPT | Nieuwpoort MVB | 51.150003 | 2.728132 |
+| `"OST"`, `"OHM"` | OST | Oostende MVB | 51.234286 | 2.926681 |
+| `"ZLD"`, `"ZB"` | ZLD | Zeebrugge MVB | 51.346400 | 3.200364 |
+
+The aliases `"OHM"` (Oostende Haven Meetpunt) and `"ZB"` (Zeebrugge) are registered for interoperability with MDK station codes.
+
+---
+
+### HicClient
+
+```python
+class HicClient:
+    def __init__(self, waterinfo: Optional[Waterinfo] = None)
+```
+
+Client for the HIC KiWIS API. Wraps a `pywaterinfo.Waterinfo("hic")` instance and translates station codes and source types into KiWIS time-series queries.
+
+<ParamField path="waterinfo" type="pywaterinfo.Waterinfo">
+  Optional pre-constructed `Waterinfo` instance. If not provided, a default `Waterinfo("hic")` is created automatically. Inject a custom instance for testing or if you need non-default KiWIS endpoint configuration.
+</ParamField>
+
+---
+
+#### `get_station()`
+
+```python
+def get_station(station_code: str) -> HicStation
+```
+
+Resolves and returns the `HicStation` for the given code.
+
+<ParamField path="station_code" type="str" required>
+  Station identifier — case-insensitive. Accepts `"NPT"`, `"OST"`, `"ZLD"`, `"OHM"`, or `"ZB"`.
+</ParamField>
+
+**Returns:** `HicStation`
+
+**Raises:** `ValueError` if the code is not recognised, with a message listing all available codes.
+
+---
+
+#### `get_water_levels()`
+
+```python
+def get_water_levels(
+    station_code: str,
+    start_time: datetime,
+    end_time: datetime,
+    source: str = "forecast",
+) -> pd.DataFrame
+```
+
+Fetches a 5-minute water-level time series in metres TAW.
+
+<ParamField path="station_code" type="str" required>
+  Station code (e.g. `"OST"`, `"NPT"`, `"ZLD"`).
+</ParamField>
+
+<ParamField path="start_time" type="datetime" required>
+  Start of the query interval. Timezone-naive datetimes are treated as UTC.
+</ParamField>
+
+<ParamField path="end_time" type="datetime" required>
+  End of the query interval.
+</ParamField>
+
+<ParamField path="source" type="str">
+  Data product to retrieve. One of:
+  - `"forecast"` — Operational hydrodynamic model including meteorological storm surge (KT-Last)
+  - `"astro"` — Pure astronomical tide prediction (Astro.05)
+  - `"observed"` — Historical 5-minute sensor observations (O.05); raises `ValueError` for stations without an observation time series
+
+  Defaults to `"forecast"`.
+</ParamField>
+
+**Returns:** `pd.DataFrame` with columns:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `timestamp` | datetime (UTC, tz-aware) | Sample time |
+| `water_level_m_taw` | float | Water level in metres TAW |
+| `station` | str | Station code |
+| `source` | str | Data product used (`"forecast"`, `"astro"`, or `"observed"`) |
+
+Returns an empty DataFrame with the same columns if the API returns no data.
+
+---
+
+#### `get_extremes()`
+
+```python
+def get_extremes(
+    station_code: str,
+    start_time: datetime,
+    end_time: datetime,
+    source: str = "forecast",
+) -> pd.DataFrame
+```
+
+Fetches High Water (HW) and Low Water (LW) tidal extreme events in metres TAW.
+
+<ParamField path="station_code" type="str" required>
+  Station code.
+</ParamField>
+
+<ParamField path="start_time" type="datetime" required>
+  Start of the query interval.
+</ParamField>
+
+<ParamField path="end_time" type="datetime" required>
+  End of the query interval.
+</ParamField>
+
+<ParamField path="source" type="str">
+  `"forecast"` (KT-HW / KT-LW) or `"astro"` (Astro.HW / Astro.LW). Defaults to `"forecast"`.
+</ParamField>
+
+**Returns:** `pd.DataFrame` with columns:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `timestamp` | datetime (UTC, tz-aware) | Time of the extreme |
+| `water_level_m_taw` | float | Water level at the extreme in metres TAW |
+| `extreme_type` | str | `"HW"` (High Water) or `"LW"` (Low Water) |
+| `station` | str | Station code |
+| `source` | str | Data product used |
+
+---
+
+#### `get_interpolated_curve()`
+
+```python
+def get_interpolated_curve(
+    station_code: str,
+    start_time: datetime,
+    end_time: datetime,
+    time_offset_minutes: float = 0.0,
+    source: str = "forecast",
+) -> pd.DataFrame
+```
+
+Fetches water levels and shifts the timestamps by `time_offset_minutes` to derive the tidal curve at a location that lags the reference station. For example, the beach at Bredene Strandpost 4 experiences tidal phases approximately 7 minutes after Oostende Haven, so you would call this method with `station_code="OST"` and `time_offset_minutes=7.0`.
+
+The query is automatically extended at the start to ensure coverage after the shift: the API is queried from `start_time − offset` to `end_time − offset`, then the returned timestamps are shifted forward by `offset`.
+
+<ParamField path="station_code" type="str" required>
+  Base reference station code.
+</ParamField>
+
+<ParamField path="start_time" type="datetime" required>
+  Desired start time at the target location.
+</ParamField>
+
+<ParamField path="end_time" type="datetime" required>
+  Desired end time at the target location.
+</ParamField>
+
+<ParamField path="time_offset_minutes" type="float">
+  Tidal phase lag in minutes. Positive values mean the target location's tide lags the reference station. Defaults to `0.0`.
+</ParamField>
+
+<ParamField path="source" type="str">
+  `"forecast"` or `"astro"`. Defaults to `"forecast"`.
+</ParamField>
+
+**Returns:** `pd.DataFrame` with the same columns as `get_water_levels()`, plus an additional `target_offset_min` column recording the applied shift. Timestamps represent the shifted local time at the target location.
+
+---
+
+## MDK module — `cscm.tide.mdk`
+
+### MdkStation
+
+```python
+@dataclass(frozen=True)
+class MdkStation:
+    code: str
+    name: str
+    latitude: float
+    longitude: float
+    water_level_param_id: str
+    description: str = ""
+```
+
+Immutable dataclass describing an MDK coastal monitoring station.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `code` | str | 3-letter station code (e.g. `"OHM"`) |
+| `name` | str | Human-readable station name |
+| `latitude` | float | WGS84 latitude |
+| `longitude` | float | WGS84 longitude |
+| `water_level_param_id` | str | 6-character `LocationParameterKey` used by the MDK API (e.g. `"OHMWS5"`) |
+| `description` | str | Optional description string |
+
+---
+
+### COASTAL_TIDE_STATIONS
+
+```python
+COASTAL_TIDE_STATIONS: Dict[str, MdkStation]
+```
+
+The canonical registry of MDK coastal tide stations:
+
+| Key | Code | Name | Latitude | Longitude | Param ID |
+|-----|------|------|----------|-----------|----------|
+| `"NPT"` | NPT | Nieuwpoort | 51.147222 | 2.743056 | `NPTWS5` |
+| `"OHM"` | OHM | Oostende Haven | 51.233333 | 2.916667 | `OHMWS5` |
+| `"BLK"` | BLK | Blankenberge | 51.316667 | 3.116667 | `BLKWS5` |
+| `"ZLD"` | ZLD | Zeebrugge Leopold II dam | 51.333333 | 3.200000 | `ZLDWS5` |
+| `"ZWD"` | ZWD | Zeebrugge Wielingendok | 51.339444 | 3.193056 | `ZWDWS5` |
+| `"MP7"` | MP7 | Westhinder (Meetpaal 7) | 51.388611 | 2.437778 | `MP7WS5` |
+
+---
+
+### MdkClient
+
+```python
+class MdkClient:
+    def __init__(
+        self,
+        username: Optional[str] = None,
+        password: Optional[str] = None,
+        base_url: str = MDK_BASE_URL,
+        session: Optional[requests.Session] = None,
+        timeout: int = 30,
+    )
+```
+
+Client for the Meetnet Vlaamse Banken REST API v2 (`https://api.meetnetvlaamsebanken.be`). Handles OAuth2 password-grant authentication, automatic token refresh, and converts raw API responses into `pandas.DataFrame` objects.
+
+<ParamField path="username" type="str">
+  MDK API username. If not provided, loaded from the `MDK_USERNAME` environment variable (or `.env` file).
+</ParamField>
+
+<ParamField path="password" type="str">
+  MDK API password. If not provided, loaded from the `MDK_PASSWORD` environment variable (or `.env` file).
+</ParamField>
+
+<ParamField path="base_url" type="str">
+  MDK API base URL. Defaults to `"https://api.meetnetvlaamsebanken.be"`.
+</ParamField>
+
+<ParamField path="session" type="requests.Session">
+  Optional pre-configured `requests.Session`. Useful for testing with mocked responses or for customising SSL/proxy settings.
+</ParamField>
+
+<ParamField path="timeout" type="int">
+  Request timeout in seconds. Defaults to `30`.
+</ParamField>
+
+---
+
+#### `ping()`
+
+```python
+def ping() -> dict
+```
+
+Calls `/V2/ping` to verify API connectivity and authentication. Returns the raw JSON response.
+
+**Returns:** `dict` — API health/status response.
+
+---
+
+#### `get_catalog()`
+
+```python
+def get_catalog(force_refresh: bool = False) -> dict
+```
+
+Retrieves the full MDK parameter and station catalog. The result is cached on the client instance after the first successful call.
+
+<ParamField path="force_refresh" type="bool">
+  If `True`, bypasses the cache and re-fetches from the API. Defaults to `False`.
+</ParamField>
+
+**Returns:** `dict` — full catalog response containing all available locations and parameters.
+
+---
+
+#### `get_current_data()`
+
+```python
+def get_current_data(ids: Optional[List[str]] = None) -> list
+```
+
+Fetches the latest available real-time sensor reading for the specified parameter IDs.
+
+<ParamField path="ids" type="list[str]">
+  Optional list of 6-character `LocationParameterKey` strings (e.g. `["OHMWS5", "NPTWS5"]`). If `None` or omitted, returns the latest data for all available sensors.
+</ParamField>
+
+**Returns:** `list` of sensor reading dicts as returned by the API.
+
+---
+
+#### `get_data()`
+
+```python
+def get_data(
+    ids: List[str],
+    start_time: Union[datetime, str],
+    end_time: Union[datetime, str],
+) -> list
+```
+
+Fetches historical time-series data for the given parameter IDs over the specified window.
+
+<ParamField path="ids" type="list[str]" required>
+  List of 6-character `LocationParameterKey` strings (e.g. `["OHMWS5", "NPTWS5"]`).
+</ParamField>
+
+<ParamField path="start_time" type="datetime | str" required>
+  Start of the query window. `datetime` objects are converted to UTC ISO format; strings are passed through directly.
+</ParamField>
+
+<ParamField path="end_time" type="datetime | str" required>
+  End of the query window.
+</ParamField>
+
+**Returns:** raw `list` of API response dicts.
+
+---
+
+#### `get_water_levels()`
+
+```python
+def get_water_levels(
+    stations: Optional[List[str]] = None,
+    start_time: Optional[Union[datetime, str]] = None,
+    end_time: Optional[Union[datetime, str]] = None,
+    in_meters: bool = True,
+) -> pd.DataFrame
+```
+
+High-level convenience method. Resolves station codes to MDK `LocationParameterKey` strings, calls `get_data()`, and returns a tidy long-format DataFrame.
+
+<ParamField path="stations" type="list[str]">
+  Station codes to query (e.g. `["NPT", "OHM", "BLK"]`). Defaults to all six `COASTAL_TIDE_STATIONS` if `None`.
+</ParamField>
+
+<ParamField path="start_time" type="datetime | str">
+  Start timestamp (UTC). Defaults to 24 hours before now.
+</ParamField>
+
+<ParamField path="end_time" type="datetime | str">
+  End timestamp (UTC). Defaults to now.
+</ParamField>
+
+<ParamField path="in_meters" type="bool">
+  If `True` (default), converts the raw cm TAW values to metres TAW. The output column is named `water_level_m_taw`. If `False`, the column is named `water_level_cm_taw`.
+</ParamField>
+
+**Returns:** `pd.DataFrame` sorted by `timestamp` then `station_code`, with columns:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `timestamp` | datetime (UTC, tz-aware) | Sample time |
+| `station_code` | str | Station code (e.g. `"OHM"`) |
+| `station_name` | str | Human-readable station name |
+| `water_level_m_taw` | float | Water level in metres TAW (or `water_level_cm_taw` if `in_meters=False`) |
+
+---
+
+#### `get_water_levels_pivot()`
+
+```python
+def get_water_levels_pivot(
+    stations: Optional[List[str]] = None,
+    start_time: Optional[Union[datetime, str]] = None,
+    end_time: Optional[Union[datetime, str]] = None,
+    in_meters: bool = True,
+    use_names: bool = False,
+) -> pd.DataFrame
+```
+
+Convenience wrapper around `get_water_levels()` that pivots the result into a wide-format DataFrame with `timestamp` as the index and one column per station.
+
+<ParamField path="stations" type="list[str]">
+  Station codes. Defaults to all six stations.
+</ParamField>
+
+<ParamField path="start_time" type="datetime | str">
+  Start timestamp. Defaults to 24 hours before now.
+</ParamField>
+
+<ParamField path="end_time" type="datetime | str">
+  End timestamp. Defaults to now.
+</ParamField>
+
+<ParamField path="in_meters" type="bool">
+  Convert to metres TAW. Defaults to `True`.
+</ParamField>
+
+<ParamField path="use_names" type="bool">
+  If `True`, uses station names as column headers instead of codes. Defaults to `False`.
+</ParamField>
+
+**Returns:** `pd.DataFrame` with `timestamp` as index and station codes (or names) as columns. Returns an empty DataFrame if no data is available.

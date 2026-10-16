@@ -1,0 +1,263 @@
+---
+title: "Kinematics Model: How CSCM Simulates Swim Trajectories"
+sidebarTitle: "Kinematics Model"
+description: "CSCM's kinematics model vectorially combines a swimmer's intrinsic velocity with tidal current vectors at each time step to compute realistic open-water trajectories."
+---
+
+At every simulation time step, CSCM performs a straightforward but physically rigorous operation: the swimmer's intrinsic velocity vector — derived from their current heading and speed — is added component-wise to the environmental current vector at that position and moment. The resulting effective displacement is then applied to advance the swimmer's position by one step. Repeated across hundreds or thousands of steps, this Eulerian integration produces a complete trajectory that accurately captures how a swimmer drifts under the influence of North Sea tidal flows. Because the tidal current can easily match or exceed a swimmer's cruising pace of ~1 m/s, even modest errors in current direction or timing propagate into large positional errors over a 6–40 hour crossing — making per-step vector accuracy the core correctness requirement of the model.
+
+## Key Classes
+
+All domain types are defined in `src/cscm/model.py`.
+
+### `SpeedVector`
+
+A dataclass representing a 2D velocity in meters per second, decomposed into geographic components.
+
+| Attribute / Property | Type | Description |
+|---|---|---|
+| `v_east_mps` | `float` | Eastward velocity component (positive = East). |
+| `v_north_mps` | `float` | Northward velocity component (positive = North). |
+| `speed_mps` | `float` _(property)_ | Scalar magnitude: `√(v_east² + v_north²)`. |
+| `direction_rad` | `float` _(property)_ | Bearing in radians; 0 = North, π/2 = East (computed via `atan2(v_east, v_north)`). |
+| `direction_deg` | `float` _(property)_ | Same bearing converted to degrees. |
+
+`SpeedVector` is used throughout the model for both swimmer intrinsic speeds and tidal current vectors. The effective displacement vector is produced by summing two `SpeedVector` instances component-by-component.
+
+---
+
+### `Position`
+
+A WGS84 (EPSG:4326) coordinate pair. The fundamental spatial unit in every trajectory list.
+
+| Attribute | Type | Description |
+|---|---|---|
+| `lat` | `float` | Latitude in decimal degrees. |
+| `lon` | `float` | Longitude in decimal degrees. |
+
+**Method:** `relative_speed_time(speed: SpeedVector, time_s: float) -> Position`
+
+Calculates the new position reached after moving at the given `SpeedVector` for `time_s` seconds. Internally converts meters to degree offsets using the standard approximation factors (111,132 m per degree latitude; longitude adjusted by `cos(lat)`).
+
+---
+
+### `LabeledPosition(Position)`
+
+Extends `Position` with a human-readable `label: str` field. Used in `wellknown.py` for named waypoints such as `KOKSIJDE`, `NIEUWPOORT`, `DOVER`, and `KINGSGATE`. Its `__str__` method returns the label, making it convenient for trajectory logging and plot annotations.
+
+---
+
+### `MovingObject` _(abstract)_
+
+Abstract base class for anything that can move through an `Environment` over discrete time steps. Maintains internal simulation state and records the full history of positions and headings.
+
+**State tracked:**
+- `trajectory: list[(int, Position)]` — list of `(elapsed_time_s, Position)` tuples accumulated during a run.
+- `guidance: list[(int, float)]` — list of `(elapsed_time_s, heading_deg)` tuples recording the commanded heading at each step.
+
+**Lifecycle methods:**
+
+| Method | Description |
+|---|---|
+| `start(at, environment)` | Resets all internal state; sets starting position; optionally validates environment compatibility. |
+| `move(heading_deg, time_s, environment)` | Executes one time step: calls `calculate_speed()`, retrieves the current vector from the environment, sums them, advances position, and appends to `trajectory` and `guidance`. |
+| `calculate_speed(heading_deg, time_s, environment)` | Combines `calculate_proper_speed_mps()` and `calculate_proper_direction_deviation()` into a single `SpeedVector`. |
+
+**Abstract methods (must be implemented by subclasses):**
+
+| Method | Returns | Description |
+|---|---|---|
+| `calculate_proper_speed_mps(heading_deg, time_s, environment)` | `float` | Intrinsic scalar speed in m/s for this time step, independent of currents. May model fatigue, conditions, etc. |
+| `calculate_proper_direction_deviation(heading_deg, time_s, environment)` | `float` | Deviation in degrees from the commanded heading. Used to model heading jitter or cross-current lean. |
+
+---
+
+### `Swimmer(MovingObject)`
+
+The concrete moving object representing a human swimmer. Implements `calculate_proper_speed_mps()` and `calculate_proper_direction_deviation()` via pluggable callable functions, allowing different swimmer profiles without subclassing.
+
+**Constructor:**
+
+```python
+Swimmer(
+    name: str,
+    speed_fn: Callable[[int], float],
+    speed_jitter_fn: Callable[[int, float], float] | None,
+    heading_jitter_fn: Callable[[int, float], float] | None,
+)
+```
+
+| Parameter | Description |
+|---|---|
+| `name` | Human-readable swimmer name (e.g. `"Marieke Blomme"`). |
+| `speed_fn` | Base speed function — see [Speed Function](#the-speed-function) below. |
+| `speed_jitter_fn` | Optional noise function applied on top of `speed_fn`. Signature: `(elapsed_s, base_speed) -> float`. |
+| `heading_jitter_fn` | Optional heading deviation function. Signature: `(elapsed_s, heading_deg) -> float`. |
+
+Pre-configured swimmer profiles are available in `cscm.wellknown.SWIMMERS`:
+- **`MBL_MIDR`** — Marieke Blomme at a constant 1.0 m/s (3.6 km/h), no jitter.
+- **`MBL_EXTR`** — Marieke Blomme at a conservative 0.833 m/s (3.0 km/h) for ultra-distance endurance.
+- **`MPO`** — Marc Portier at 0.91 m/s with 5% speed jitter and ±2° heading jitter.
+
+---
+
+### `Environment` _(abstract)_
+
+Represents the instantaneous environmental conditions at a specific position and moment — a snapshot delivered to `MovingObject.move()` at every step.
+
+**Abstract method:** `get_current() -> SpeedVector`
+
+Returns the local tidal current vector (eastward and northward components in m/s) at the current step. Concrete implementations wrap CMEMS NetCDF interpolation or uniform test currents.
+
+---
+
+### `CurrentsModel` _(abstract)_
+
+A spatiotemporally aware factory for current vectors. Where `Environment` is a snapshot, `CurrentsModel` covers the full domain.
+
+| Method | Description |
+|---|---|
+| `get_current(position: Position, moment: datetime) -> SpeedVector` | Returns the current vector at any position and absolute timestamp. |
+| `has_absolute_time_reference() -> bool` | Returns `True` if the model operates in wall-clock time (e.g. live CMEMS NetCDF data); `False` if it uses a relative or cyclic time reference. |
+| `calibrate_time_phase(tpc: TimePhaseCalibration) -> TimePhaseCalibration` | Negotiates the absolute/relative time mapping between the model and the simulation framework. See `TimePhaseCalibration` below. |
+
+---
+
+### `EnvironmentModel` _(abstract)_
+
+The top-level provider queried by `TrajectoryCalculator` at each step. Bridges `CurrentsModel` into the `Environment` interface expected by `MovingObject.move()`.
+
+**Abstract method:** `get_environment(position: Position, moment: datetime) -> Environment`
+
+---
+
+### `TrajectoryCalculator`
+
+Drives the Eulerian step-by-step integration loop. Constructed once with a fixed time resolution and then used to run trajectories for any combination of swimmer, start conditions, and environment.
+
+**Constructor:** `TrajectoryCalculator(time_step_s: int)`
+
+**Core method:**
+
+```python
+calculate_trajectory(
+    moving_object: MovingObject,
+    start_position: Position,
+    start_time: datetime,
+    heading_deg_fn: Callable[[int], float],
+    duration_s: int,
+    environment_model: EnvironmentModel,
+) -> TrajectoryResult
+```
+
+Iterates from `t = 0` to `t = duration_s` in steps of `time_step_s`. At each step it queries the `EnvironmentModel` for the local `Environment`, asks the `MovingObject` to execute one `move()`, and collects the resulting position. Returns a `TrajectoryResult` containing the full trajectory and guidance lists.
+
+---
+
+### `TrajectoryFinder`
+
+Wraps `TrajectoryCalculator` with a search loop that scans a configurable window of start times and heading functions to identify the trajectory that reaches a target end position fastest.
+
+**Constructor:** `TrajectoryFinder(calc_time_step_s: int, environment_model: EnvironmentModel)`
+
+**Core method:**
+
+```python
+find_optimum(
+    moving_object: MovingObject,
+    start_position: Position,
+    end_position: Position,
+    first_start_time_dt: datetime,
+    last_start_time_dt: datetime,
+    start_time_step_s: int,
+    heading_deg_fn: Callable[[int], float],
+    max_duration_s: int,
+) -> TrajectoryResult
+```
+
+Iterates over all candidate start times in `[first_start_time_dt, last_start_time_dt]` at `start_time_step_s` resolution. For each, it runs `calculate_trajectory()` and checks whether the final position falls within a tolerance radius of `end_position`. The best (shortest-duration) matching trajectory is returned.
+
+---
+
+### `TrajectoryResult`
+
+Dataclass returned by both `TrajectoryCalculator.calculate_trajectory()` and `TrajectoryFinder.find_optimum()`.
+
+| Field | Type | Description |
+|---|---|---|
+| `trajectory` | `list[(int, Position)]` | Ordered list of `(elapsed_time_s, Position)` pairs from step 0 to `duration_s`. |
+| `guidance` | `list[(int, float)]` | Ordered list of `(elapsed_time_s, heading_deg)` pairs recording the commanded heading at each step. |
+| `duration_s` | `int` | Total simulation duration in seconds. |
+
+---
+
+### `TimePhaseCalibration`
+
+Couples a relative-time `CurrentsModel` (e.g., a purely cyclic statistical tidal model) to the absolute calendar time used by the simulation framework.
+
+| Attribute | Type | Description |
+|---|---|---|
+| `absolute_time` | `datetime \| None` | A known wall-clock moment within the tidal cycle (e.g., the moment of Peak Flood Current). |
+| `time_offset` | `timedelta \| None` | The corresponding offset from the model's internal cycle start to that absolute moment. |
+
+When a `CurrentsModel` reports `has_absolute_time_reference() == False`, the simulation calls `calibrate_time_phase()` to exchange one known anchor point between the model and the framework, allowing both to stay in sync throughout the run.
+
+---
+
+## Example: Creating a Swimmer and Running a Trajectory
+
+```python
+from cscm.model import Position, TrajectoryCalculator
+from cscm.wellknown import SWIMMERS, POSITIONS
+
+# Pre-configured swimmer: Marieke Blomme, constant 1.0 m/s
+swimmer = SWIMMERS["MBL_MIDR"]
+
+# Named start position: Koksijde, Belgium (51.1194°N, 2.62575°E)
+start = POSITIONS["KOKSIJDE"]
+
+# Constant NW heading of 316° — aimed to clear the Colruyt mussel farm
+calc = TrajectoryCalculator(time_step_s=60)  # 1-minute integration steps
+
+# result = calc.calculate_trajectory(
+#     moving_object=swimmer,
+#     start_position=start,
+#     start_time=start_time,          # datetime of swim start
+#     heading_deg_fn=lambda t: 316.0, # constant heading function
+#     duration_s=6 * 3600,            # 6-hour swim
+#     environment_model=env_model,    # CMEMS-backed environment
+# )
+#
+# for elapsed_s, pos in result.trajectory:
+#     print(f"t+{elapsed_s//60:03d}min  →  {pos}")
+```
+
+---
+
+## The Speed Function
+
+The `speed_fn` passed to `Swimmer` has the signature:
+
+```python
+Callable[[int], float]
+```
+
+It takes `elapsed_s` — the number of seconds since the swim started — and returns the swimmer's target speed in **meters per second** at that moment. This allows arbitrarily rich fatigue modelling:
+
+```python
+# Constant speed (no fatigue)
+speed_fn = lambda elapsed_s: 1.0
+
+# Linear decay: starts at 1.1 m/s, loses 0.05 m/s per hour
+speed_fn = lambda elapsed_s: max(0.7, 1.1 - (elapsed_s / 3600) * 0.05)
+
+# Loaded from a Garmin FIT export curve (empirical)
+speed_fn = lambda elapsed_s: my_garmin_speed_curve(elapsed_s)
+```
+
+The `speed_jitter_fn`, if provided, is applied on top: `speed_jitter_fn(elapsed_s, base_speed) -> float`. The return value is added to the base speed, enabling stochastic Monte-Carlo ensemble runs.
+
+<Note>
+**Heading convention:** All headings in CSCM are **true bearings** measured clockwise from geographic North.
+`0°` = North, `90°` = East, `180°` = South, `270°` = West. A heading of `316°` points North-Northwest — the primary course used for Koksijde test swims aimed to clear the Colruyt mussel farm.
+</Note>

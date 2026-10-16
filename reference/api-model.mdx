@@ -1,0 +1,581 @@
+---
+title: "cscm.model API Reference: Core Kinematics Classes"
+sidebarTitle: "cscm.model"
+description: "Full API reference for cscm.model — SpeedVector, Position, Swimmer, MovingObject, CurrentsModel, TrajectoryCalculator, TrajectoryFinder, and related abstract base classes."
+---
+
+`cscm.model` is the foundational module defining all core domain abstractions used throughout the CSCM toolkit. It establishes the physical quantities that represent movement on the water (`SpeedVector`, `Position`), the moving objects that navigate through the environment (`MovingObject`, `Swimmer`), the environmental models that supply current data (`Environment`, `CurrentsModel`, `EnvironmentModel`), and the trajectory computation machinery that ties it all together (`TrajectoryCalculator`, `TrajectoryFinder`). Every higher-level module — simulations, CMEMS integrations, tide clients — builds on the interfaces defined here.
+
+---
+
+## SpeedVector
+
+```python
+@dataclass
+class SpeedVector:
+    v_east_mps: float
+    v_north_mps: float
+```
+
+A 2D velocity vector expressed in the WGS84 East–North frame, where both components are in metres per second (m/s). Used to represent both swimmer intrinsic speed and tidal/ocean current vectors.
+
+### Fields
+
+<ParamField path="v_east_mps" type="float" required>
+  Eastward velocity component in m/s. Positive values indicate eastward movement (increasing longitude).
+</ParamField>
+
+<ParamField path="v_north_mps" type="float" required>
+  Northward velocity component in m/s. Positive values indicate northward movement (increasing latitude).
+</ParamField>
+
+### Properties
+
+<ParamField path="speed_mps" type="float">
+  Read-only. Euclidean magnitude of the vector: `sqrt(v_east_mps² + v_north_mps²)`.
+</ParamField>
+
+<ParamField path="direction_rad" type="float">
+  Read-only. Direction of travel in radians measured clockwise from North. Computed as `atan2(v_east_mps, v_north_mps)`.
+</ParamField>
+
+<ParamField path="direction_deg" type="float">
+  Read-only. Direction of travel in degrees measured clockwise from North (0° = North, 90° = East, 180° = South, 270° = West). Equivalent to `degrees(direction_rad)`.
+</ParamField>
+
+---
+
+## Position
+
+```python
+@dataclass
+class Position:
+    lat: float
+    lon: float
+```
+
+A geographic coordinate in WGS84 (EPSG:4326). The foundational spatial type used by all CSCM classes to represent a point on the water.
+
+### Fields
+
+<ParamField path="lat" type="float" required>
+  Latitude in decimal degrees (WGS84). Positive north of the equator.
+</ParamField>
+
+<ParamField path="lon" type="float" required>
+  Longitude in decimal degrees (WGS84). Positive east of the prime meridian.
+</ParamField>
+
+### Methods
+
+#### `relative_speed_time()`
+
+```python
+def relative_speed_time(speed: SpeedVector, time_s: float) -> Position
+```
+
+Computes a new `Position` reached by moving from `self` at the given `SpeedVector` for `time_s` seconds. Uses approximate flat-earth conversion (111 132 m per degree latitude; longitude scale corrected by `cos(lat)`).
+
+<ParamField path="speed" type="SpeedVector" required>
+  Velocity vector in m/s describing the direction and speed of travel.
+</ParamField>
+
+<ParamField path="time_s" type="float" required>
+  Duration of movement in seconds.
+</ParamField>
+
+**Returns:** a new `Position` at the computed location.
+
+#### `__str__()`
+
+Returns `"[lat, lon]"`.
+
+---
+
+## LabeledPosition
+
+```python
+@dataclass
+class LabeledPosition(Position):
+    label: str
+```
+
+Extends `Position` with a human-readable name. All entries in `cscm.wellknown.POSITIONS` are `LabeledPosition` instances.
+
+### Additional field
+
+<ParamField path="label" type="str" required>
+  Human-readable name for this location (e.g. `"Koksijde"`, `"Dover, Shakespeare Beach"`).
+</ParamField>
+
+#### `__str__()`
+
+Returns `label` rather than coordinates, making `LabeledPosition` instances print cleanly in log output and trajectory reports.
+
+---
+
+## Environment
+
+```python
+class Environment(ABC):
+    @abstractmethod
+    def current(self) -> SpeedVector: ...
+```
+
+Abstract base class representing the environmental conditions at a specific point in space and time. Concrete implementations are supplied by `EnvironmentModel.get_environment()`.
+
+### Abstract methods
+
+<ParamField path="current()" type="SpeedVector">
+  Returns the ocean current vector (m/s) at the position and moment this `Environment` instance represents.
+</ParamField>
+
+---
+
+## MovingObject
+
+```python
+class MovingObject(ABC):
+```
+
+Abstract base class describing the behaviour of any object that moves through an `Environment`. `Swimmer` is the primary concrete subclass. All state (elapsed time, current position, accumulated trajectory and guidance log) is stored on the instance and mutated by `move()`.
+
+### State attributes (after `reset()`)
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `time_s` | `int` | Elapsed simulation time in seconds since `reset()`. |
+| `pos` | `Position \| None` | Current geographic position. |
+| `trajectory` | `list[tuple[int, Position]]` | History of `(elapsed_s, Position)` pairs appended after each `move()`. |
+| `guidance` | `list[tuple[int, float]]` | History of `(elapsed_s, heading_deg)` pairs appended after each `move()`. |
+
+### Methods
+
+#### `reset()`
+
+```python
+def reset(at: Position = None)
+```
+
+Resets `time_s` to `0`, sets `pos` to `at`, and clears `trajectory` and `guidance`.
+
+<ParamField path="at" type="Position">
+  Optional starting position. Defaults to `None`.
+</ParamField>
+
+---
+
+#### `start()`
+
+```python
+def start(at: Position, environment: Environment)
+```
+
+Sets the starting point for a new simulation run. Calls `reset(at=at.pos)` and, if `environment` is not `None`, delegates to `env_compat_check()`. Raise a `ValueError` from `env_compat_check()` if the environment type is incompatible.
+
+<ParamField path="at" type="Position" required>
+  Starting geographic position.
+</ParamField>
+
+<ParamField path="environment" type="Environment" required>
+  Environment instance at the starting position and time, used for compatibility checking.
+</ParamField>
+
+---
+
+#### `env_compat_check()`
+
+```python
+def env_compat_check(environment: Environment)
+```
+
+Base implementation is a no-op. Subclasses can override this to raise `ValueError` when the supplied environment type is incompatible with the moving object's model.
+
+---
+
+#### `move()`
+
+```python
+def move(heading_deg: float, time_s: int, environment: Environment) -> Position
+```
+
+Integrates one simulation time step. The method:
+
+1. Calls `calculate_speed()` to get the object's intrinsic speed vector for this step.
+2. Retrieves the current vector from `environment.get_current()`.
+3. Adds both vectors to produce the effective speed vector.
+4. Computes the new geographic position via WGS84-corrected integration.
+5. Increments `self.time_s` by `time_s`.
+6. Appends `(self.time_s, new_position)` to `self.trajectory`.
+7. Appends `(self.time_s, heading_deg)` to `self.guidance`.
+
+<ParamField path="heading_deg" type="float" required>
+  Intended heading in degrees (0 = North, 90 = East).
+</ParamField>
+
+<ParamField path="time_s" type="int" required>
+  Duration of this step in seconds.
+</ParamField>
+
+<ParamField path="environment" type="Environment" required>
+  Environmental conditions at the current position and time.
+</ParamField>
+
+**Returns:** the new `Position` after the step.
+
+---
+
+#### `calculate_speed()`
+
+```python
+def calculate_speed(
+    heading_deg: float,
+    time_s: int,
+    environment: Environment,
+) -> SpeedVector
+```
+
+Computes the object's intrinsic (pre-current) speed vector by combining `calculate_proper_speed_mps()` with `calculate_proper_direction_deviation()` and decomposing into East/North components.
+
+---
+
+#### `calculate_proper_speed_mps()` *(abstract)*
+
+```python
+@abstractmethod
+def calculate_proper_speed_mps(
+    heading_deg: float,
+    time_s: int,
+    environment: Environment,
+) -> float
+```
+
+Returns the object's intrinsic speed in m/s for this step, **excluding** current-induced displacement. Should account for internal state (e.g. fatigue via `self.time_s`) and may consider environmental conditions such as wave angle, but must not double-count the current vector that `move()` adds separately.
+
+---
+
+#### `calculate_proper_direction_deviation()` *(abstract)*
+
+```python
+@abstractmethod
+def calculate_proper_direction_deviation(
+    heading_deg: float,
+    time_s: int,
+    environment: Environment,
+) -> float
+```
+
+Returns a deviation in degrees to apply to `heading_deg` for this step, representing navigation imprecision or the tendency to lean into a current. Typically a small random value.
+
+---
+
+## Swimmer
+
+```python
+class Swimmer(MovingObject):
+    def __init__(
+        self,
+        name: str,
+        speed_fn: Callable[[int], float],
+        speed_jitter_fn: Callable[[int, float], float] = None,
+        heading_jitter_fn: Callable[[int, float], float] = None,
+    )
+```
+
+Concrete `MovingObject` representing a human open-water swimmer. Behaviour is fully parameterised by callable functions, making it straightforward to model different athletes or fatigue profiles without subclassing.
+
+### Constructor parameters
+
+<ParamField path="name" type="str" required>
+  Display name of the swimmer (e.g. `"Marc Portier"`).
+</ParamField>
+
+<ParamField path="speed_fn" type="Callable[[int], float]" required>
+  Maps elapsed simulation time `time_s` (seconds) to the swimmer's base speed in m/s. A constant-speed swimmer uses `constant(1.0)`; a fatigue model would return a decreasing value as `time_s` grows.
+</ParamField>
+
+<ParamField path="speed_jitter_fn" type="Callable[[int, float], float]">
+  Optional. Receives `(time_s, base_speed)` and returns a **delta** speed in m/s added to the base speed from `speed_fn`. Use `random_jitter(percentage, max=cap)` from `cscm.wellknown` for stochastic variation.
+</ParamField>
+
+<ParamField path="heading_jitter_fn" type="Callable[[int, float], float]">
+  Optional. Receives `(time_s, heading_deg)` and returns a deviation in degrees to add to the intended heading. Use `random_jitter(percentage, base=amplitude)` for random angular scatter.
+</ParamField>
+
+### Implemented abstract methods
+
+**`calculate_proper_speed_mps()`** — calls `speed_fn(time_s)` and, if `speed_jitter_fn` is set, adds `speed_jitter_fn(self.time_s, speed)` to the result.
+
+**`calculate_proper_direction_deviation()`** — returns `heading_jitter_fn(self.time_s, heading_deg)` if set, otherwise `0.0`.
+
+---
+
+## CurrentsModel
+
+```python
+class CurrentsModel(ABC):
+```
+
+Abstract base class for any model capable of producing an ocean current vector for a given position and moment in time. Concrete implementations include `UniformCurrentsModel` (stub) and `CmemsForecastCurrentsModel`.
+
+### Abstract methods
+
+#### `get_current()`
+
+```python
+@abstractmethod
+def get_current(position: Position, moment: datetime) -> SpeedVector
+```
+
+Returns the current velocity vector at `position` and `moment`. Implementations may raise `ValueError` if the requested position or time lies outside their spatial or temporal domain.
+
+<ParamField path="position" type="Position" required>
+  Geographic location to query.
+</ParamField>
+
+<ParamField path="moment" type="datetime" required>
+  Absolute UTC time to query.
+</ParamField>
+
+---
+
+#### `has_absolute_time_reference()`
+
+```python
+@abstractmethod
+def has_absolute_time_reference() -> bool
+```
+
+Returns `True` if this model's internal time axis is anchored to real-world UTC (e.g. CMEMS NetCDF actuals), `False` if it is purely cyclic/theoretical (e.g. a sinusoidal tidal model). The simulation framework uses this flag to decide whether `calibrate_time_phase()` needs to be called.
+
+---
+
+#### `calibrate_time_phase()`
+
+```python
+@abstractmethod
+def calibrate_time_phase(tpc: TimePhaseCalibration) -> TimePhaseCalibration
+```
+
+Negotiates a temporal alignment between the simulation's absolute time frame and the model's internal cyclic reference. Pass in a `TimePhaseCalibration` with either the absolute or relative component set; the model fills in the other and returns the completed object.
+
+<ParamField path="tpc" type="TimePhaseCalibration" required>
+  Calibration object carrying either `absolute_time` or `time_offset`.
+</ParamField>
+
+---
+
+## TimePhaseCalibration
+
+```python
+class TimePhaseCalibration:
+    def __init__(
+        self,
+        absolute_time: datetime | None = None,
+        time_offset: timedelta | None = None,
+    )
+```
+
+A negotiation object used to synchronise relative (cyclic) `CurrentsModel` implementations with the absolute simulation time. The simulation framework and the model each hold a reference to the same `TimePhaseCalibration` instance, allowing them to share a common time anchor without tight coupling.
+
+### Attributes
+
+<ParamField path="absolute_time" type="datetime | None">
+  The absolute UTC moment (e.g. a known spring-tide peak) that anchors the model's cycle.
+</ParamField>
+
+<ParamField path="time_offset" type="timedelta | None">
+  The timedelta between the model's internal cycle start and `absolute_time`.
+</ParamField>
+
+<Note>
+The current convention is to use the peak current speed at spring tide (approximately 3.105 hours before high tide) as the calibration anchor, as this is the most readily identifiable feature in CMEMS datasets.
+</Note>
+
+---
+
+## EnvironmentModel
+
+```python
+class EnvironmentModel(ABC):
+    @abstractmethod
+    def get_environment(position: Position, moment: datetime) -> Environment: ...
+```
+
+Abstract factory that vends `Environment` instances for specific points in space and time. `TrajectoryCalculator` calls `get_environment()` at each time step to obtain the local current conditions as the moving object advances along its trajectory.
+
+### Abstract methods
+
+<ParamField path="get_environment()" type="Environment">
+  Returns an `Environment` instance valid for `position` at `moment`. The returned object provides the current vector for that single point in time, which `move()` will add to the swimmer's intrinsic speed vector.
+</ParamField>
+
+---
+
+## TrajectoryResult
+
+```python
+@dataclass
+class TrajectoryResult:
+    trajectory: list[tuple[int, Position]]
+    guidance: list[tuple[int, float]]
+    duration_s: int
+```
+
+The output of a `TrajectoryCalculator.calculate_trajectory()` call.
+
+### Fields
+
+<ParamField path="trajectory" type="list[tuple[int, Position]]" required>
+  Ordered list of `(elapsed_s, Position)` pairs. The first entry is always `(0, start_position)`; subsequent entries are separated by `time_step_s` seconds.
+</ParamField>
+
+<ParamField path="guidance" type="list[tuple[int, float]]" required>
+  Ordered list of `(elapsed_s, heading_deg)` pairs recording the intended heading at each step.
+</ParamField>
+
+<ParamField path="duration_s" type="int" required>
+  Total simulated duration in seconds.
+</ParamField>
+
+---
+
+## TrajectoryCalculator
+
+```python
+class TrajectoryCalculator:
+    def __init__(self, time_step_s: int)
+```
+
+Steps a `MovingObject` through an `EnvironmentModel` at a fixed time resolution to produce a complete `TrajectoryResult`.
+
+### Constructor parameters
+
+<ParamField path="time_step_s" type="int" required>
+  Integration time step in seconds. Smaller values yield more accurate trajectories at the cost of computation time. A typical value for a 6-hour swim is 60 seconds.
+</ParamField>
+
+### Methods
+
+#### `calculate_trajectory()`
+
+```python
+def calculate_trajectory(
+    moving_object: MovingObject,
+    start_position: Position,
+    start_time: datetime,
+    heading_deg_fn: Callable[[int], float],
+    duration_s: int,
+    environment_model: EnvironmentModel,
+) -> TrajectoryResult
+```
+
+Runs the full simulation loop. At each step the environment is queried for the current position and time, `heading_deg_fn` is called with the current elapsed time, and `moving_object.move()` advances the object.
+
+<ParamField path="moving_object" type="MovingObject" required>
+  The swimmer or other moving object to simulate.
+</ParamField>
+
+<ParamField path="start_position" type="Position" required>
+  Geographic start position.
+</ParamField>
+
+<ParamField path="start_time" type="datetime" required>
+  Absolute UTC start time.
+</ParamField>
+
+<ParamField path="heading_deg_fn" type="Callable[[int], float]" required>
+  A function of elapsed seconds `f(time_s) -> heading_deg`. Use a constant lambda for a straight-line simulation, or a more complex function to model waypoint-based navigation.
+</ParamField>
+
+<ParamField path="duration_s" type="int" required>
+  Total simulation duration in seconds.
+</ParamField>
+
+<ParamField path="environment_model" type="EnvironmentModel" required>
+  Provides `Environment` instances at each position and time step.
+</ParamField>
+
+**Returns:** `TrajectoryResult`
+
+---
+
+## TrajectoryFinder
+
+```python
+class TrajectoryFinder:
+    def __init__(
+        self,
+        calc_time_step_s: int,
+        environment_model: EnvironmentModel,
+    )
+```
+
+Scans a space of possible start times (and, eventually, heading strategies) to find the trajectory that reaches `end_position` in the shortest time.
+
+### Constructor parameters
+
+<ParamField path="calc_time_step_s" type="int" required>
+  Integration time step forwarded to the internal `TrajectoryCalculator`.
+</ParamField>
+
+<ParamField path="environment_model" type="EnvironmentModel" required>
+  Environment model shared across all candidate trajectory evaluations.
+</ParamField>
+
+### Methods
+
+#### `find_optimum()`
+
+```python
+def find_optimum(
+    moving_object: MovingObject,
+    start_position: Position,
+    end_position: Position,
+    first_start_time_dt: datetime,
+    last_start_time_dt: datetime,
+    start_time_step_s: int,
+    heading_deg_fn: Callable[[int], float],
+    max_duration_s: int,
+) -> TrajectoryResult
+```
+
+Iterates over start times between `first_start_time_dt` and `last_start_time_dt` at `start_time_step_s` intervals, runs `calculate_trajectory()` for each, and returns the `TrajectoryResult` whose final position falls within tolerance of `end_position` with the smallest `duration_s`.
+
+<ParamField path="moving_object" type="MovingObject" required>
+  The swimmer to evaluate for each candidate start time.
+</ParamField>
+
+<ParamField path="start_position" type="Position" required>
+  Geographic start position (fixed across all candidates).
+</ParamField>
+
+<ParamField path="end_position" type="Position" required>
+  Target finish position. Arrival is tested via an internal tolerance check.
+</ParamField>
+
+<ParamField path="first_start_time_dt" type="datetime" required>
+  Earliest candidate start time (UTC).
+</ParamField>
+
+<ParamField path="last_start_time_dt" type="datetime" required>
+  Latest candidate start time (UTC).
+</ParamField>
+
+<ParamField path="start_time_step_s" type="int" required>
+  Granularity of the start-time scan in seconds (e.g. 3600 for hourly candidates).
+</ParamField>
+
+<ParamField path="heading_deg_fn" type="Callable[[int], float]" required>
+  Heading strategy shared across all candidates. Currently a fixed function is passed; multi-heading search is planned.
+</ParamField>
+
+<ParamField path="max_duration_s" type="int" required>
+  Maximum allowed simulation duration per candidate in seconds. Candidates that do not arrive within this limit are discarded.
+</ParamField>
+
+**Returns:** the best `TrajectoryResult` found, or `None` if no candidate reaches `end_position` within `max_duration_s`.
+
+<Note>
+The current implementation of `TrajectoryFinder` scans start times with a fixed heading function. A planned future enhancement will additionally scan across a range of constant headings (derived from the bearing between start and end positions) and eventually support adaptive heading re-optimisation at intermediate waypoints.
+</Note>

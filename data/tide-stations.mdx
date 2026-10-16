@@ -1,0 +1,277 @@
+---
+title: "Belgian Coastal Tide Stations: HIC and MDK APIs"
+sidebarTitle: "Tide Stations"
+description: "CSCM provides HicClient and MdkClient to query water level forecasts, astronomical tidal curves, and HW/LW extremes from Belgian coastal monitoring networks."
+---
+
+CSCM integrates with two Belgian coastal data sources to provide water level forecasts and observed tidal data that complement the CMEMS current fields: the **Flemish Hydro Information Centre (HIC)** KiWIS API (accessed via the `pywaterinfo` library) and the **Meetnet Vlaamse Banken (MDK)** REST API v2. Both services publish water level time series and tidal extremes for stations along the Belgian coast — Nieuwpoort, Oostende, Blankenberge, and Zeebrugge — enabling CSCM to cross-validate its CMEMS-derived current model against independent tide-gauge observations and operational surge forecasts.
+
+---
+
+## HicClient
+
+`HicClient` wraps the HIC Waterinfo KiWIS API to retrieve 5-minute water level forecasts (including meteorological storm surge via the hydrodynamic model), pure astronomical tide predictions, and tabulated High Water / Low Water extremes.
+
+```python
+from cscm.tide.hic import HicClient
+```
+
+### `HicStation` dataclass
+
+Each entry in `HIC_COASTAL_STATIONS` is an immutable `HicStation` dataclass:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `code` | `str` | Canonical 3-letter station code (e.g. `"OST"`). |
+| `name` | `str` | Human-readable station name (e.g. `"Oostende MVB"`). |
+| `station_id` | `str` | HIC numerical station identifier. |
+| `station_no` | `str` | Official HIC station number (e.g. `"OST-1069"`). |
+| `latitude` | `float` | Station latitude in decimal degrees (WGS84). |
+| `longitude` | `float` | Station longitude in decimal degrees (WGS84). |
+| `ts_forecast_5min` | `str` | KiWIS timeseries ID for the 5-min operational surge+tide model (KT-Last). |
+| `ts_astro_5min` | `str` | KiWIS timeseries ID for the 5-min astronomical tide prediction (Astro.05). |
+| `ts_forecast_hw` | `str` | KiWIS timeseries ID for forecast High Water extremes (KT-HW). |
+| `ts_forecast_lw` | `str` | KiWIS timeseries ID for forecast Low Water extremes (KT-LW). |
+| `ts_astro_hw` | `str` | KiWIS timeseries ID for astronomical High Water extremes (Astro.HW). |
+| `ts_astro_lw` | `str` | KiWIS timeseries ID for astronomical Low Water extremes (Astro.LW). |
+| `ts_observed_5min` | `str \| None` | KiWIS timeseries ID for 5-min gauge observations (O.05), if available. |
+
+### `HIC_COASTAL_STATIONS` dictionary
+
+Three primary stations are registered, plus two synonyms for cross-system interoperability with MDK codes:
+
+| Code | Synonyms | Name | Latitude | Longitude |
+|------|----------|------|----------|-----------|
+| `NPT` | — | Nieuwpoort MVB | 51.150003 | 2.728132 |
+| `OST` | `OHM` | Oostende MVB | 51.234286 | 2.926681 |
+| `ZLD` | `ZB` | Zeebrugge MVB | 51.346400 | 3.200364 |
+
+The synonyms `OHM` and `ZB` resolve to the same `HicStation` objects as `OST` and `ZLD` respectively, so code that uses MDK station codes transparently works with `HicClient` as well.
+
+### Methods
+
+#### `get_water_levels(station_code, start_time, end_time, source='forecast') -> pd.DataFrame`
+
+Fetches the 5-minute water level time series in metres TAW for the given station and time window.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `station_code` | `str` | — | Station code (`"NPT"`, `"OST"`, `"OHM"`, `"ZLD"`, `"ZB"`). |
+| `start_time` | `datetime` | — | Start of the query interval. Timezone-naive datetimes are treated as UTC. |
+| `end_time` | `datetime` | — | End of the query interval. |
+| `source` | `str` | `"forecast"` | `"forecast"` — operational hydrodynamic model including meteorological storm surge (KT-Last); `"astro"` — pure astronomical tide prediction (Astro.05); `"observed"` — historical 5-minute sensor observations (O.05). |
+
+Returns a `pd.DataFrame` with columns `timestamp`, `water_level_m_taw`, `station`, `source`.
+
+---
+
+#### `get_extremes(station_code, start_time, end_time, source='forecast') -> pd.DataFrame`
+
+Fetches tabulated High Water (HW) and Low Water (LW) tidal extremes in metres TAW.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `station_code` | `str` | — | Station code. |
+| `start_time` | `datetime` | — | Start of the query interval. |
+| `end_time` | `datetime` | — | End of the query interval. |
+| `source` | `str` | `"forecast"` | `"forecast"` (KT-HW and KT-LW) or `"astro"` (Astro.HW and Astro.LW). |
+
+Returns a `pd.DataFrame` with columns `timestamp`, `water_level_m_taw`, `extreme_type` (`"HW"` or `"LW"`), `station`, `source`.
+
+---
+
+#### `get_interpolated_curve(station_code, start_time, end_time, time_offset_minutes=0.0, source='forecast') -> pd.DataFrame`
+
+Fetches water levels and applies a temporal offset to account for tidal propagation lag relative to the reference station. For example, Bredene Strandpost 4 experiences tidal phases approximately 7 minutes later than Oostende Haven.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `station_code` | `str` | — | Base reference station code (e.g. `"OST"`). |
+| `start_time` | `datetime` | — | Desired start time at the **target location**. |
+| `end_time` | `datetime` | — | Desired end time at the target location. |
+| `time_offset_minutes` | `float` | `0.0` | Lag in minutes. A positive value means the target location's tidal phase lags behind the reference station. The method queries the base station from `start_time − offset` to `end_time − offset`, then shifts all timestamps forward by the offset. |
+| `source` | `str` | `"forecast"` | `"forecast"` or `"astro"`. |
+
+Returns the same column structure as `get_water_levels()`, with an additional `target_offset_min` column.
+
+### HicClient usage example
+
+```python
+from cscm.tide.hic import HicClient
+from datetime import datetime, timezone, timedelta
+
+client = HicClient()
+now = datetime.now(timezone.utc)
+
+# Fetch 48-hour forecast water levels for Nieuwpoort
+df = client.get_water_levels(
+    "NPT",
+    start_time=now,
+    end_time=now + timedelta(hours=48),
+    source="forecast"
+)
+print(df.head())
+
+# Fetch predicted tidal extremes (HW/LW) for Oostende over 3 days
+extremes = client.get_extremes("OST", now, now + timedelta(days=3))
+print(extremes)
+
+# Fetch astronomic tide for Bredene (7 min lag vs Oostende)
+bredene_curve = client.get_interpolated_curve(
+    "OST",
+    start_time=now,
+    end_time=now + timedelta(hours=24),
+    time_offset_minutes=7.0,
+    source="astro",
+)
+print(bredene_curve.head())
+```
+
+---
+
+## MdkClient
+
+`MdkClient` authenticates against the Meetnet Vlaamse Banken REST API v2 using OAuth2 password-flow bearer tokens and provides water level time series for 6 coastal stations including the offshore Westhinder platform.
+
+```python
+from cscm.tide.mdk import MdkClient
+```
+
+### `MdkStation` dataclass
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `code` | `str` | 3-letter station code (e.g. `"OHM"`). |
+| `name` | `str` | Human-readable station name. |
+| `latitude` | `float` | Station latitude in decimal degrees (WGS84). |
+| `longitude` | `float` | Station longitude in decimal degrees (WGS84). |
+| `water_level_param_id` | `str` | 6-character `LocationParameterKey` used in API queries (e.g. `"OHMWS5"`). |
+| `description` | `str` | Free-text description of the station and parameter. |
+
+### `COASTAL_TIDE_STATIONS` dictionary
+
+| Code | Name | Latitude | Longitude | Param ID |
+|------|------|----------|-----------|----------|
+| `NPT` | Nieuwpoort | 51.147222 | 2.743056 | `NPTWS5` |
+| `OHM` | Oostende Haven | 51.233333 | 2.916667 | `OHMWS5` |
+| `BLK` | Blankenberge | 51.316667 | 3.116667 | `BLKWS5` |
+| `ZLD` | Zeebrugge Leopold II dam | 51.333333 | 3.200000 | `ZLDWS5` |
+| `ZWD` | Zeebrugge Wielingendok | 51.339444 | 3.193056 | `ZWDWS5` |
+| `MP7` | Westhinder (Meetpaal 7) | 51.388611 | 2.437778 | `MP7WS5` |
+
+### Constructor
+
+```python
+MdkClient(username=None, password=None, base_url=MDK_BASE_URL, session=None, timeout=30)
+```
+
+If `username` and `password` are not passed directly, the constructor automatically loads them from the `MDK_USERNAME` and `MDK_PASSWORD` environment variables (sourcing `.env` files via `python-dotenv`). Authentication tokens are fetched lazily on the first API call and automatically refreshed when they approach expiry (within 60 seconds of the `expires_in` window).
+
+<Note>
+MDK credentials (`MDK_USERNAME`, `MDK_PASSWORD`) are entirely separate from the Copernicus Marine credentials used for CMEMS downloads. You need both sets of credentials to run the full CSCM pipeline. Register for an MDK account at [meetnetvlaamsebanken.be/Account/Register](https://meetnetvlaamsebanken.be/Account/Register).
+</Note>
+
+### Methods
+
+#### `ping() -> dict`
+
+Calls `GET /V2/ping` to verify connectivity and API health. Returns the raw JSON response dict. Useful for a quick credential and network sanity check.
+
+---
+
+#### `get_catalog(force_refresh=False) -> dict`
+
+Retrieves the full MDK station and parameter catalog via `GET /V2/catalog`. The result is cached in memory; pass `force_refresh=True` to bypass the cache and fetch a fresh copy from the API.
+
+---
+
+#### `get_current_data(ids=None) -> list`
+
+Fetches the latest available sensor reading for each of the given `LocationParameterKey` IDs via `POST /V2/currentData`. If `ids` is `None` or an empty list, the API returns the latest reading for **all** available sensors. Returns the raw JSON list.
+
+---
+
+#### `get_data(ids, start_time, end_time) -> list`
+
+Fetches a raw time series for the given `LocationParameterKey` IDs within the specified time window via `POST /V2/getData`. Both `datetime` objects and ISO 8601 strings are accepted for `start_time` and `end_time`. Returns the raw JSON list; use `get_water_levels()` for a pre-processed DataFrame.
+
+---
+
+#### `get_water_levels(stations=None, start_time=None, end_time=None, in_meters=True) -> pd.DataFrame`
+
+High-level method that retrieves water level data and returns a tidy `pd.DataFrame`.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `stations` | `list[str] \| None` | `None` | Station codes to query. Defaults to all 6 `COASTAL_TIDE_STATIONS` when `None`. |
+| `start_time` | `datetime \| str \| None` | `None` | Start timestamp. Defaults to 24 hours ago. |
+| `end_time` | `datetime \| str \| None` | `None` | End timestamp. Defaults to now. |
+| `in_meters` | `bool` | `True` | When `True`, converts the raw cm TAW values returned by the API to metres TAW (divides by 100). |
+
+Returns a `pd.DataFrame` with columns `timestamp`, `station_code`, `station_name`, `water_level_m_taw` (or `water_level_cm_taw` when `in_meters=False`), sorted by `timestamp` then `station_code`.
+
+---
+
+#### `get_water_levels_pivot(stations=None, start_time=None, end_time=None, in_meters=True, use_names=False) -> pd.DataFrame`
+
+Pivoted convenience wrapper around `get_water_levels()`. Returns a DataFrame with `timestamp` as the index and one column per station. When `use_names=True`, columns are labelled by `station_name` instead of `station_code`.
+
+### MdkClient usage example
+
+```python
+from cscm.tide.mdk import MdkClient
+from datetime import datetime, timezone, timedelta
+
+client = MdkClient()  # reads MDK_USERNAME/MDK_PASSWORD from env
+now = datetime.now(timezone.utc)
+
+df = client.get_water_levels(
+    stations=["NPT", "OHM"],
+    start_time=now - timedelta(hours=6),
+    end_time=now,
+)
+print(df.pivot(index="timestamp", columns="station_code", values="water_level_m_taw"))
+
+# Pivoted shorthand
+pivot = client.get_water_levels_pivot(
+    stations=["NPT", "OHM", "BLK", "ZLD", "ZWD", "MP7"],
+    start_time=now - timedelta(hours=12),
+    end_time=now,
+)
+print(pivot)
+
+# Check API connectivity
+print(client.ping())
+```
+
+---
+
+## Station summary
+
+<CardGroup cols={2}>
+  <Card title="HIC — 3 Stations" icon="water">
+    Flemish Hydro Information Centre KiWIS API via `pywaterinfo`.
+    Provides 5-minute operational surge+tide forecasts, astronomical curves, and HW/LW extremes.
+
+    | Code | Name |
+    |------|------|
+    | `NPT` | Nieuwpoort MVB |
+    | `OST` | Oostende MVB |
+    | `ZLD` | Zeebrugge MVB |
+
+    Synonyms: `OHM` → `OST`, `ZB` → `ZLD`
+  </Card>
+  <Card title="MDK — 6 Stations" icon="chart-line">
+    Meetnet Vlaamse Banken REST API v2.
+    Provides raw sensor time series (cm TAW, 5-min) for coastal and offshore monitoring platforms.
+
+    | Code | Name |
+    |------|------|
+    | `NPT` | Nieuwpoort |
+    | `OHM` | Oostende Haven |
+    | `BLK` | Blankenberge |
+    | `ZLD` | Zeebrugge Leopold II dam |
+    | `ZWD` | Zeebrugge Wielingendok |
+    | `MP7` | Westhinder (Meetpaal 7) |
+  </Card>
+</CardGroup>
