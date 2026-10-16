@@ -85,7 +85,6 @@ By the end of this guide you will have a fully working CSCM installation connect
     calc:
       - id: "{date}-koksijde-{time}-pec"
         from: KOKSIJDE
-        by: MBL_MIDR
         bearing: 316
         duration: 6h
         time:
@@ -97,7 +96,7 @@ By the end of this guide you will have a fully working CSCM installation connect
       folder: /tmp/results/koksijde/{now}/
     ```
 
-    `from` and `by` reference built-in keys from `wellknown.py` — `KOKSIJDE` is the Koksijde beach start position, and `MBL_MIDR` is the Marieke Blomme swimmer profile at a steady 1.0 m/s (3.6 km/h). The `time.detect` block automatically finds Peak Ebb Current times within the given local time window and runs a separate simulation for each match.
+    `from` references a built-in position key from `wellknown.py` — `KOKSIJDE` is the Koksijde beach start position at `lat=51.11940, lon=2.62575`. The `time.detect` block automatically finds Peak Ebb Current times within the given local time window and runs a separate simulation for each match.
 
     Once your job file is saved, run the simulator:
 

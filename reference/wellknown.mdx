@@ -1,7 +1,7 @@
 ---
-title: "Wellknown Positions, Swimmers, and Current Models"
-sidebarTitle: "Wellknown"
-description: "cscm.wellknown provides built-in LabeledPosition coordinates for North Sea swim locations, verified Swimmer profiles with speed functions, and helper factories for speed/jitter functions."
+title: "Well-known Positions, Swimmers, and Current Models"
+sidebarTitle: "Well-known"
+description: "Ready-to-use registry of North Sea swim positions, named Swimmer profiles with speed functions, and current model constants for CSCM simulations."
 ---
 
 `cscm.wellknown` is a batteries-included registry of ready-to-use instances of positions, swimmers, and current models. Every entry can be referenced by its string key in both Python code and YAML job files, letting you build simulations and route analyses without manually specifying coordinates or swimmer behavioural parameters.
@@ -135,7 +135,7 @@ model = CURRENT_MODELS["BCH_UNIFORM"]
 
 ### BCH_UNIFORM
 
-A `UniformCurrentsModel()` instantiated with its default parameters. The model is structurally complete (direction, peak speed, tidal period, lunar period, and lunar factor are all wired up) but the internal simulation logic is not yet fully implemented — it currently returns a zero vector. It serves as a placeholder for testing the simulation pipeline without a live CMEMS data feed.
+A `UniformCurrentsModel()` instantiated with its default parameters. The model is structurally complete (direction, peak speed, tidal period, lunar period, and lunar factor are all wired up) but the internal simulation logic is not yet fully implemented — it currently returns `None` from `get_current()` rather than a live `SpeedVector`. It serves as a placeholder for testing the simulation pipeline without a live CMEMS data feed.
 
 See [`cscm.current.current_model`](/reference/api-currents#uniformcurrentsmodel) for full parameter documentation.
 
@@ -155,7 +155,7 @@ Returns a closure that always produces `value`, regardless of how much time has 
   The fixed value to return on every call.
 </ParamField>
 
-**Returns:** `Callable[[int], float]` — a function `f(time_s)` that always returns `value`.
+**Returns:** `Callable[[int], float]` — a function `f(time_s: int) -> float` that always returns `value`.
 
 ```python
 from cscm.wellknown import constant
@@ -179,7 +179,7 @@ random_jitter(
 
 Returns a jitter function with the signature `f(time_s: int, value: float) -> float`. On each call the jitter is computed as:
 
-```
+```text
 jittered = value * (1 + random.uniform(-percentage, percentage))
 ```
 
@@ -194,10 +194,10 @@ If `base` is set, `value` is replaced by `base` before applying the percentage j
 </ParamField>
 
 <ParamField path="max" type="float">
-  Upper cap applied to the absolute jittered result. Useful to prevent unrealistically large speed spikes.
+  Upper cap applied to the jittered result. Useful to prevent unrealistically large speed spikes.
 </ParamField>
 
-**Returns:** `Callable[[int, float], float]`
+**Returns:** `Callable[[int, float], float]` — a function `f(time_s: int, value: float) -> float`.
 
 ```python
 from cscm.wellknown import random_jitter
@@ -215,7 +215,7 @@ deviation_deg = heading_jitter(time_s=900, value=316.0)
 
 ## Creating custom swimmers
 
-You can compose `constant` and `random_jitter` with any callable to build a fully custom `Swimmer`:
+You can compose `constant` and `random_jitter` with any callable to build a fully custom `Swimmer`. The `Swimmer` class is imported from `cscm.model`, not from `cscm.wellknown`:
 
 ```python
 from cscm.model import Swimmer

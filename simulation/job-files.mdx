@@ -1,10 +1,10 @@
 ---
 title: "CSCM Simulation Job Files: YAML Configuration Reference"
 sidebarTitle: "Job Files"
-description: "Define CSCM simulation jobs in YAML files — configure start positions, swimmer profiles, headings, duration, tide detection, output paths, labels, colors, and email dispatch."
+description: "Configure CSCM simulation jobs in YAML: define start positions, headings, duration, tide peak detection, output paths, color schemes, and email dispatch."
 ---
 
-Simulation jobs are defined as YAML files placed in `./data/simulation/` (or a custom directory passed to the CLI via `--job-dir`). When the simulator runs, it discovers every `.yml` and `.yaml` file in that directory, parses each one with `parse_job_file()` into a `JobConfig` dataclass, evaluates activation conditions, and executes the qualifying jobs. This declarative approach means you can maintain a library of recurring swim scenarios — different start locations, headings, or time windows — and simply toggle them on and off without touching code.
+Simulation jobs are defined as YAML files placed in `./data/simulation/jobs/` (or a custom directory passed to the CLI via `--job-dir`). When the simulator runs, it discovers every `.yml` and `.yaml` file in that directory, parses each one with `parse_job_file()` into a `JobConfig` dataclass, evaluates activation conditions, and executes the qualifying jobs. This declarative approach means you can maintain a library of recurring swim scenarios — different start locations, headings, or time windows — and simply toggle them on and off without touching code.
 
 ---
 
@@ -26,7 +26,6 @@ date:
 calc:
   - id: "{date}-myname-{time}-pec"
     from: KOKSIJDE     # Must be a key from wellknown POSITIONS
-    by: MBL_MIDR       # Must be a key from wellknown SWIMMERS
     bearing: 333       # True North heading in degrees
     duration: 6h
     time:
@@ -109,7 +108,7 @@ results:
 ### date block
 
 <ParamField path="date.range" type="string" default="1d,+5d">
-  Comma-separated list of day offsets relative to the current run date, controlling which calendar days receive simulations. Each token is an integer followed by `d` (e.g. `0d` for today, `1d` for tomorrow, up to `6d` for six days ahead). A fixed ISO date (e.g. `2027-10-07`) may also be used in place of an offset token.
+  Comma-separated list of day offsets relative to the current run date, controlling which calendar days receive simulations. Each token must be an integer followed by `d` (e.g. `0d` for today, `1d` for tomorrow, up to `6d` for six days ahead). The leading `+` is optional and ignored during parsing.
 
   ```yaml
   date:
@@ -132,11 +131,7 @@ The `calc` key holds a list of calculation configurations. Each entry defines on
 </ParamField>
 
 <ParamField path="calc[].from" type="string" required>
-  Key of a wellknown position defined in `cscm/wellknown.py` (e.g. `KOKSIJDE`, `NIEUWPOORT`, `DOVER`). The simulator snaps this position to the nearest open-water grid cell in the CMEMS dataset before running tide detection and trajectory integration.
-</ParamField>
-
-<ParamField path="calc[].by" type="string">
-  Key of a wellknown swimmer profile defined in `cscm/wellknown.py` (e.g. `MBL_MIDR`). Reserved for future swimmer-speed profile integration; currently the simulation engine uses a fixed intrinsic speed of 1.0 m/s regardless of this value.
+  Key of a wellknown position defined in `cscm/wellknown.py` (e.g. `KOKSIJDE`, `NIEUWPOORT`, `DOVER`). The simulator snaps this position to the nearest open-water grid cell in the CMEMS dataset before running tide peak detection. The original (un-snapped) position is used as the trajectory start.
 </ParamField>
 
 <ParamField path="calc[].bearing" type="float" required>
@@ -253,6 +248,12 @@ The `calc` key holds a list of calculation configurations. Each entry defines on
   - `gpx` — all GPX files only (as binary attachments)
   - `none` — send the HTML email body only, no attachments
 </ParamField>
+
+---
+
+## Swimmer speed
+
+The simulation engine always uses a fixed intrinsic swimmer speed of **1.0 m/s** for all trajectory calculations. There is no per-job swimmer profile key in the YAML format — the speed is hardcoded in `simulate_test_swim()` and `plot_daily_simulations()`.
 
 ---
 

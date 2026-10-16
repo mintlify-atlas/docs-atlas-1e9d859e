@@ -1,10 +1,10 @@
 ---
 title: "Download CMEMS Tidal Current Forecasts by Lunar Cycle"
 sidebarTitle: "CMEMS Retrieval"
-description: "CMEMSDataManager downloads 1.5 km / 15-minute Copernicus Marine current forecasts partitioned into lunar cycles with asymmetric tidal-lag margins and a local catalog."
+description: "CMEMSDataManager downloads 1.5 km/15-min Copernicus Marine current forecasts partitioned into lunar cycles with tidal-lag margins and a local JSON catalog."
 ---
 
-CSCM downloads the CMEMS dataset `cmems_mod_nws_phy-cur_anfc_1.5km-2D_PT15M-i` — the Copernicus Marine North West Shelf Atlantic 2D surface current analysis and forecast at 1.5 km horizontal resolution and 15-minute temporal intervals. Files are organised by synodic month (new moon to new moon) rather than by calendar month, ensuring every download contains a complete Spring-Neap tidal cycle. A local JSON-sidecar catalog tracks each lunar-cycle file so that already-complete historic periods are never re-downloaded.
+CSCM downloads the CMEMS dataset `cmems_mod_nws_phy-cur_anfc_1.5km-2D_PT15M-i` (version `202511`) — the Copernicus Marine North West Shelf Atlantic 2D surface current analysis and forecast at 1.5 km horizontal resolution and 15-minute temporal intervals. Files are organised by synodic month (new moon to new moon) rather than by calendar month, ensuring every download contains a complete Spring-Neap tidal cycle. A local JSON-sidecar catalog tracks each lunar-cycle file so that already-complete historic periods are never re-downloaded.
 
 <Warning>
 CMEMS downloads require valid Copernicus Marine credentials. Set `COPERNICUSMARINE_SERVICE_USERNAME` and `COPERNICUSMARINE_SERVICE_PASSWORD` in your environment (or in a `.env` file at the repository root) before running any retrieval. You can register for a free account at [data.marine.copernicus.eu](https://data.marine.copernicus.eu/register).
@@ -117,11 +117,14 @@ The `cscm.current.cmems` module can be run directly to download and analyse the 
 # Download and update the full CMEMS datastore, then run tidal analysis
 poetry run python -m cscm.current.cmems
 
-# Refresh only the 2 most recent lunar cycles
+# Refresh only the 2 most recent lunar cycles (applies to both download and analysis)
 poetry run python -m cscm.current.cmems --limit 2
 
 # Skip the download step and only (re-)run analysis
 poetry run python -m cscm.current.cmems --skip-update
+
+# Skip the analysis step and only run the download update
+poetry run python -m cscm.current.cmems --skip-analysis
 
 # Force full re-analysis, ignoring cached _analysis.json files
 poetry run python -m cscm.current.cmems --force

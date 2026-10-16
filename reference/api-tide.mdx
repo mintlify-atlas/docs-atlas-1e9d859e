@@ -1,7 +1,7 @@
 ---
-title: "cscm.tide API Reference: HicClient and MdkClient"
+title: "cscm.tide — HicClient and MdkClient Water Level APIs"
 sidebarTitle: "cscm.tide"
-description: "API reference for HicClient (HIC KiWIS water level forecasts) and MdkClient (Meetnet Vlaamse Banken REST API) — methods, parameters, return types, and station constants."
+description: "API reference for HicClient (HIC KiWIS tidal data) and MdkClient (MDK REST API v2) — methods, return types, and Belgian coastal station registries."
 ---
 
 `cscm.tide` provides two independent client modules for Belgian coastal water level data. `hic.py` wraps the Flemish Hydro Information Centre (HIC) KiWIS API via the `pywaterinfo` library, giving access to operational surge forecasts, astronomical tide predictions, and HW/LW extremes for the three canonical coastal stations. `mdk.py` wraps the Meetnet Vlaamse Banken (MDK) REST API v2 directly using `requests`, giving access to observed water-level time series for a broader set of six coastal monitoring stations including the offshore Westhinder platform.
@@ -130,11 +130,11 @@ Fetches a 5-minute water-level time series in metres TAW.
 
 <ParamField path="source" type="str">
   Data product to retrieve. One of:
-  - `"forecast"` — Operational hydrodynamic model including meteorological storm surge (KT-Last)
+  - `"forecast"` *(default)* — Operational hydrodynamic model including meteorological storm surge (KT-Last)
   - `"astro"` — Pure astronomical tide prediction (Astro.05)
   - `"observed"` — Historical 5-minute sensor observations (O.05); raises `ValueError` for stations without an observation time series
 
-  Defaults to `"forecast"`.
+  Raises `ValueError` for any other value.
 </ParamField>
 
 **Returns:** `pd.DataFrame` with columns:
@@ -176,7 +176,7 @@ Fetches High Water (HW) and Low Water (LW) tidal extreme events in metres TAW.
 </ParamField>
 
 <ParamField path="source" type="str">
-  `"forecast"` (KT-HW / KT-LW) or `"astro"` (Astro.HW / Astro.LW). Defaults to `"forecast"`.
+  `"forecast"` *(default)* (KT-HW / KT-LW) or `"astro"` (Astro.HW / Astro.LW). Raises `ValueError` for any other value — unlike `get_water_levels()`, `"observed"` is not accepted here.
 </ParamField>
 
 **Returns:** `pd.DataFrame` with columns:
@@ -188,6 +188,8 @@ Fetches High Water (HW) and Low Water (LW) tidal extreme events in metres TAW.
 | `extreme_type` | str | `"HW"` (High Water) or `"LW"` (Low Water) |
 | `station` | str | Station code |
 | `source` | str | Data product used |
+
+Returns an empty DataFrame with the same columns if the API returns no data.
 
 ---
 
@@ -205,7 +207,15 @@ def get_interpolated_curve(
 
 Fetches water levels and shifts the timestamps by `time_offset_minutes` to derive the tidal curve at a location that lags the reference station. For example, the beach at Bredene Strandpost 4 experiences tidal phases approximately 7 minutes after Oostende Haven, so you would call this method with `station_code="OST"` and `time_offset_minutes=7.0`.
 
-The query is automatically extended at the start to ensure coverage after the shift: the API is queried from `start_time − offset` to `end_time − offset`, then the returned timestamps are shifted forward by `offset`.
+The query is automatically extended at the start to ensure coverage after the shift: the base station is queried from `start_time − offset` to `end_time − offset`, then the returned timestamps are shifted forward by `offset`.
+
+```python
+delta = pd.Timedelta(minutes=time_offset_minutes)
+query_start = start_time - delta   # query base station earlier
+query_end   = end_time   - delta
+df = get_water_levels(station_code, query_start, query_end, source=source)
+df["timestamp"] = df["timestamp"] + delta   # shift timestamps forward
+```
 
 <ParamField path="station_code" type="str" required>
   Base reference station code.
@@ -314,6 +324,22 @@ Client for the Meetnet Vlaamse Banken REST API v2 (`https://api.meetnetvlaamseba
   Request timeout in seconds. Defaults to `30`.
 </ParamField>
 
+<Note>
+Set `MDK_USERNAME` and `MDK_PASSWORD` as environment variables or in a `.env` file at the project root. If neither constructor arguments nor environment variables are present, `_ensure_token()` raises a `ValueError` on the first authenticated request.
+</Note>
+
+---
+
+#### `_ensure_token()`
+
+```python
+def _ensure_token() -> str
+```
+
+Internal method. Authenticates against the MDK token endpoint or returns the cached token if it is still valid. A token is considered valid if more than 60 seconds remain before expiry (`(expires_at - now).total_seconds() > 60`). If credentials are missing, raises `ValueError`. If the HTTP request fails, raises `RuntimeError`.
+
+**Returns:** the current bearer token string.
+
 ---
 
 #### `ping()`
@@ -373,7 +399,7 @@ def get_data(
 Fetches historical time-series data for the given parameter IDs over the specified window.
 
 <ParamField path="ids" type="list[str]" required>
-  List of 6-character `LocationParameterKey` strings (e.g. `["OHMWS5", "NPTWS5"]`).
+  List of 6-character `LocationParameterKey` strings (e.g. `["OHMWS5", "NPTWS5"]`). The key format is a 3-letter station code followed by a 3-character parameter suffix — for water levels use `WS5` (e.g. `"OHMWS5"` for Oostende Haven water level).
 </ParamField>
 
 <ParamField path="start_time" type="datetime | str" required>

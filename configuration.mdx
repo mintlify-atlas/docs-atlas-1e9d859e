@@ -1,7 +1,7 @@
 ---
 title: "Configure CSCM Environment Variables"
 sidebarTitle: "Configuration"
-description: "All CSCM environment variables for Copernicus Marine, MDK, geographic extent, and simulation data paths — read from a .env file or the shell environment."
+description: "Complete reference for CSCM environment variables: Copernicus Marine credentials, MDK tide-gauge access, geographic bounding box, and data storage paths."
 ---
 
 CSCM reads all runtime configuration from environment variables, loaded via [python-dotenv](https://pypi.org/project/python-dotenv/) at startup. You can provide values in a `.env` file at the project root, or set them directly in your shell environment — both are treated identically. The repository ships a `.env.example` file that lists every available option with comments explaining each one.
@@ -42,14 +42,6 @@ These credentials authenticate CSCM's calls to the `copernicusmarine` Python cli
   ```bash
   COPERNICUSMARINE_SERVICE_PASSWORD=***your*copernicus*marine*password***
   ```
-</ParamField>
-
-<ParamField body="CMEMS_USERNAME" type="string">
-  Legacy alias for `COPERNICUSMARINE_SERVICE_USERNAME`. Recognised by some older CSCM utility scripts. Prefer `COPERNICUSMARINE_SERVICE_USERNAME` for new setups.
-</ParamField>
-
-<ParamField body="CMEMS_PASSWORD" type="string">
-  Legacy alias for `COPERNICUSMARINE_SERVICE_PASSWORD`. Recognised by some older CSCM utility scripts. Prefer `COPERNICUSMARINE_SERVICE_PASSWORD` for new setups.
 </ParamField>
 
 ---
@@ -110,24 +102,18 @@ The geographic extent controls which spatial slice of the NW Shelf model grid is
 
 ### Recommended North Sea Extent
 
-For a Belgian-to-English cross-channel route, restrict the download to the southern North Sea:
-
-```bash
-CMEMS_GEO_EXTENT=-3.0,4.5,49.5,52.5
-```
-
-This covers the coastline from the Strait of Dover to the Hook of Holland, and from northern France to the Thames Estuary — sufficient for route planning between Koksijde (BE) and Orford Ness / Kingsgate (UK). Compared to the global default, this extent reduces each lunar-cycle NetCDF file from several gigabytes to tens of megabytes and cuts analysis runtime proportionally.
-
-For even tighter North Sea production use, the extent used in `.env.example` narrows to the most likely crossing corridor:
+For a Belgian-to-English cross-channel route, the `.env.example` ships with an extent that covers the most likely crossing corridor between the Belgian coast and the English shore:
 
 ```bash
 CMEMS_GEO_EXTENT=0.469393,3.571506,50.729498,52.578752
 ```
 
+This covers the sea area from roughly Calais/Dunkirk in the southwest to the Hook of Holland in the northeast, and from the Belgian coast to approximately the latitude of Norwich — sufficient for route planning between Koksijde (BE) and Orford Ness / Kingsgate (UK). Compared to the global default, this extent reduces each lunar-cycle NetCDF file from several gigabytes to tens of megabytes and cuts analysis runtime proportionally.
+
 <ParamField body="CMEMS_FOCAL_POSITIONS" type="string">
   Comma-separated list of position keys from `wellknown.py` (e.g. `KOKSIJDE,BREDENE_POST4,W_1_2`) used to select which grid cells receive detailed diagnostic verification plots after PCA analysis. Use `*` or `all` to generate plots for every known position.
 
-  **Default:** All positions (`*`) when unset; the `.env.example` ships with `KOKSIJDE,BREDENE_POST4,W_1_2`.
+  **Default:** `*` (all positions) when unset.
 
   ```bash
   CMEMS_FOCAL_POSITIONS=KOKSIJDE,BREDENE_POST4,W_1_2

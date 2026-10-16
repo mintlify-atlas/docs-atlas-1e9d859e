@@ -1,7 +1,7 @@
 ---
-title: "Tidal Current Analysis with Per-Cell PCA"
+title: "CSCM Tidal Analysis: Per-Cell PCA and Slack Detection"
 sidebarTitle: "Tidal Analysis"
-description: "CSCM applies Principal Component Analysis to every grid cell in the CMEMS NetCDF dataset to automatically determine the local tidal flow axis and detect exact slack-water reversals."
+description: "CSCM runs per-cell PCA on CMEMS NetCDF grids to find local tidal flow axes, detect slack-water reversals, and classify Spring and Neap peaks."
 ---
 
 North Sea tidal flows do not follow a single fixed axis. Bathymetric ridges, sandbanks, estuary mouths, and headlands each deflect the tidal ellipse differently — so the principal direction of flood current at one CMEMS grid cell may diverge by tens of degrees from the cell immediately adjacent. A single globally assumed axis introduces systematic errors that compound over a multi-hour trajectory. CSCM therefore runs a fully localized Principal Component Analysis (PCA) on the velocity time series of **every individual grid cell** in the downloaded NetCDF dataset. This produces a unique principal flow angle per cell, onto which the raw U/V current components are projected, enabling reliable slack-water detection and amplitude characterization across the entire crossing domain without any manual per-location tuning.
@@ -95,18 +95,24 @@ For each peak the function records:
 | `lunar_phase_deg` | Position within the current synodic month (0° = New Moon, 180° = Full Moon). |
 | `nominal_tidal_phase_deg` | Phase within the idealized tidal cycle based on the lunar period. |
 | `dynamic_tidal_phase_deg` | Self-normalizing tidal phase interpolated between actual zero crossings (0°=Slack Ebb→Flood, 90°=Peak Flood, 180°=Slack Flood→Ebb, 270°=Peak Ebb). |
+| `offset_days` | Elapsed days from the start of the enclosing new-moon cycle to this peak. |
 
 **Spring/Neap reduction:** The full set of peaks across the lunar cycle is sorted by absolute amplitude. The top-6 highest-amplitude peaks are retained as **`spring_peaks`** (Spring tide proxies) and the bottom-6 lowest-amplitude peaks as **`neap_peaks`** (Neap tide proxies). Both lists are returned in chronological order. This dramatic data reduction (>99% size saving versus the full time series) is what makes storing per-cell analytics in JSON feasible.
 
-**Cell-level summary fields:**
+**Cell-level summary fields returned in the dict:**
 
 | Field | Description |
 |---|---|
+| `cell_id` | String identifier in the form `"cell_{lat:.5f}_{lon:.5f}"`. |
+| `latitude` | Cell centre latitude in decimal degrees. |
+| `longitude` | Cell centre longitude in decimal degrees. |
+| `grid_indices` | `[y_idx, x_idx]` integer index pair into the NetCDF grid. |
 | `principal_flow_angle_deg` | Principal axis angle in degrees (Flood direction, Eastward-aligned). |
+| `principal_flow_angle_rad` | Principal axis angle in radians. |
 | `max_peak_mps` | Absolute amplitude of the largest Spring peak (m/s). |
 | `min_peak_mps` | Absolute amplitude of the smallest Neap peak (m/s). |
-| `spring_peaks` | Top-6 peaks by amplitude (Spring tide proxies). |
-| `neap_peaks` | Bottom-6 peaks by amplitude (Neap tide proxies). |
+| `spring_peaks` | Top-6 peaks by amplitude (Spring tide proxies), in chronological order. |
+| `neap_peaks` | Bottom-6 peaks by amplitude (Neap tide proxies), in chronological order. |
 
 ---
 

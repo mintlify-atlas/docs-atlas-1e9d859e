@@ -1,7 +1,7 @@
 ---
 title: "Analyse CMEMS NetCDF Files with Per-Cell Tidal PCA"
 sidebarTitle: "CMEMS Analysis"
-description: "CSCM runs vectorised Principal Component Analysis on every CMEMS grid cell to extract tidal flow axes, peak currents, slack-water times, and Spring/Neap envelopes."
+description: "CSCM runs vectorised PCA on every CMEMS grid cell to extract tidal flow axes, peak currents, slack-water transitions, and Spring/Neap calibration anchors."
 ---
 
 `process_nc_file()` and `process_catalog()` transform raw CMEMS NetCDF files into compact JSON analysis databases — one `*_analysis.json` file per NetCDF — that power the CSCM simulation engine. For each non-land grid cell, the pipeline projects current velocities onto the dominant tidal axis using vectorised Principal Component Analysis (PCA), extracts all Spring and Neap peak currents within the lunar cycle, identifies the first Spring peak after each new moon as a time-phase calibration anchor, and strips the result down to a minimal JSON representation that is orders of magnitude smaller than the source NetCDF.
@@ -241,6 +241,9 @@ poetry run python -m cscm.current.cmems
 
 # Run analysis only (skip download), force recalculation of all JSON files
 poetry run python -m cscm.current.cmems --skip-update --force
+
+# Download only (skip analysis step)
+poetry run python -m cscm.current.cmems --skip-analysis
 
 # Limit to the 3 most recent cycles, with DEBUG logging
 poetry run python -m cscm.current.cmems --limit 3 --log-level DEBUG

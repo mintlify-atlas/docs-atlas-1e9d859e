@@ -1,7 +1,7 @@
 ---
-title: "cscm.model API Reference: Core Kinematics Classes"
+title: "cscm.model — Core Kinematics and Trajectory Classes"
 sidebarTitle: "cscm.model"
-description: "Full API reference for cscm.model — SpeedVector, Position, Swimmer, MovingObject, CurrentsModel, TrajectoryCalculator, TrajectoryFinder, and related abstract base classes."
+description: "API reference for cscm.model core classes: SpeedVector, Position, Swimmer, MovingObject, CurrentsModel, TrajectoryCalculator, and TrajectoryFinder."
 ---
 
 `cscm.model` is the foundational module defining all core domain abstractions used throughout the CSCM toolkit. It establishes the physical quantities that represent movement on the water (`SpeedVector`, `Position`), the moving objects that navigate through the environment (`MovingObject`, `Swimmer`), the environmental models that supply current data (`Environment`, `CurrentsModel`, `EnvironmentModel`), and the trajectory computation machinery that ties it all together (`TrajectoryCalculator`, `TrajectoryFinder`). Every higher-level module — simulations, CMEMS integrations, tide clients — builds on the interfaces defined here.
@@ -36,11 +36,11 @@ A 2D velocity vector expressed in the WGS84 East–North frame, where both compo
 </ParamField>
 
 <ParamField path="direction_rad" type="float">
-  Read-only. Direction of travel in radians measured clockwise from North. Computed as `atan2(v_east_mps, v_north_mps)`.
+  Read-only. Direction of travel in radians. Computed as `atan2(v_east_mps, v_north_mps)` — note this places North at 0 and East at π/2, matching compass-bearing convention.
 </ParamField>
 
 <ParamField path="direction_deg" type="float">
-  Read-only. Direction of travel in degrees measured clockwise from North (0° = North, 90° = East, 180° = South, 270° = West). Equivalent to `degrees(direction_rad)`.
+  Read-only. Direction of travel in degrees. Equivalent to `degrees(direction_rad)` — 0° = North, 90° = East.
 </ParamField>
 
 ---
@@ -196,7 +196,7 @@ Base implementation is a no-op. Subclasses can override this to raise `ValueErro
 #### `move()`
 
 ```python
-def move(heading_deg: float, time_s: int, environment: Environment) -> Position
+def move(heading_deg: float, time_s: int, environment: Environment)
 ```
 
 Integrates one simulation time step. The method:
@@ -221,7 +221,9 @@ Integrates one simulation time step. The method:
   Environmental conditions at the current position and time.
 </ParamField>
 
-**Returns:** the new `Position` after the step.
+<Warning>
+`move()` has no `return` statement — it returns `None` implicitly. State is updated in place on `self.trajectory`, `self.pos`, and `self.time_s`. The docstring in source says "returns the new position" but the actual implementation does not. Read the position from `self.pos` after calling `move()`.
+</Warning>
 
 ---
 
@@ -235,7 +237,17 @@ def calculate_speed(
 ) -> SpeedVector
 ```
 
-Computes the object's intrinsic (pre-current) speed vector by combining `calculate_proper_speed_mps()` with `calculate_proper_direction_deviation()` and decomposing into East/North components.
+Computes the object's intrinsic (pre-current) speed vector. Calls `calculate_proper_speed_mps()` and `calculate_proper_direction_deviation()`, then decomposes into East/North components using the following formula (exactly as implemented in source):
+
+```python
+proper_direction_rad = math.radians(proper_direction_deg)
+v_east  = proper_speed_mps * math.cos(proper_direction_rad)
+v_north = proper_speed_mps * math.sin(proper_direction_rad)
+```
+
+<Warning>
+This decomposition uses `cos` for the East component and `sin` for the North component — the reverse of the standard compass-bearing convention (which normally uses `sin` for East and `cos` for North). This is how the source is implemented; be aware when interpreting or extending the codebase. Additionally, the source constructs `SpeedVector(v_east=v_east, v_north=v_north)` using shortened keyword names that do not match the `SpeedVector` dataclass fields (`v_east_mps`, `v_north_mps`), which will raise a `TypeError` at runtime. This is a known bug tracked upstream.
+</Warning>
 
 ---
 
@@ -381,11 +393,11 @@ A negotiation object used to synchronise relative (cyclic) `CurrentsModel` imple
 ### Attributes
 
 <ParamField path="absolute_time" type="datetime | None">
-  The absolute UTC moment (e.g. a known spring-tide peak) that anchors the model's cycle.
+  The absolute UTC moment (e.g. a known spring-tide peak) that anchors the model's cycle. Set to `None` if not yet resolved.
 </ParamField>
 
 <ParamField path="time_offset" type="timedelta | None">
-  The timedelta between the model's internal cycle start and `absolute_time`.
+  The timedelta between the model's internal cycle start and `absolute_time`. Set to `None` if not yet resolved.
 </ParamField>
 
 <Note>
@@ -419,10 +431,14 @@ Abstract factory that vends `Environment` instances for specific points in space
 class TrajectoryResult:
     trajectory: list[tuple[int, Position]]
     guidance: list[tuple[int, float]]
-    duration_s: int
+    durartion_s: int
 ```
 
 The output of a `TrajectoryCalculator.calculate_trajectory()` call.
+
+<Warning>
+The field `durartion_s` contains a typo in the source code — it is spelled `durartion_s` (not `duration_s`). This is the actual field name you must use when accessing the attribute. A fix is tracked upstream.
+</Warning>
 
 ### Fields
 
@@ -434,8 +450,8 @@ The output of a `TrajectoryCalculator.calculate_trajectory()` call.
   Ordered list of `(elapsed_s, heading_deg)` pairs recording the intended heading at each step.
 </ParamField>
 
-<ParamField path="duration_s" type="int" required>
-  Total simulated duration in seconds.
+<ParamField path="durartion_s" type="int" required>
+  Total simulated duration in seconds. **Note the typo in the field name** (`durartion_s`, not `duration_s`) — this reflects the source code exactly.
 </ParamField>
 
 ---
@@ -540,7 +556,7 @@ def find_optimum(
 ) -> TrajectoryResult
 ```
 
-Iterates over start times between `first_start_time_dt` and `last_start_time_dt` at `start_time_step_s` intervals, runs `calculate_trajectory()` for each, and returns the `TrajectoryResult` whose final position falls within tolerance of `end_position` with the smallest `duration_s`.
+Iterates over start times between `first_start_time_dt` and `last_start_time_dt` at `start_time_step_s` intervals, runs `calculate_trajectory()` for each, and returns the `TrajectoryResult` whose final position falls within tolerance of `end_position` with the smallest `durartion_s`.
 
 <ParamField path="moving_object" type="MovingObject" required>
   The swimmer to evaluate for each candidate start time.
@@ -575,6 +591,10 @@ Iterates over start times between `first_start_time_dt` and `last_start_time_dt`
 </ParamField>
 
 **Returns:** the best `TrajectoryResult` found, or `None` if no candidate reaches `end_position` within `max_duration_s`.
+
+<Warning>
+`find_optimum()` calls `self._is_within_tolerance(final_position, end_position)` internally, but `_is_within_tolerance` is not yet implemented in the `TrajectoryFinder` class. Calling `find_optimum()` will raise an `AttributeError` at runtime. This is an incomplete implementation tracked upstream.
+</Warning>
 
 <Note>
 The current implementation of `TrajectoryFinder` scans start times with a fixed heading function. A planned future enhancement will additionally scan across a range of constant headings (derived from the bearing between start and end positions) and eventually support adaptive heading re-optimisation at intermediate waypoints.

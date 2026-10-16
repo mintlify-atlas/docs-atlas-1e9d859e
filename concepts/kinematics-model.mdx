@@ -1,7 +1,7 @@
 ---
-title: "Kinematics Model: How CSCM Simulates Swim Trajectories"
+title: "CSCM Kinematics: Eulerian Swim Trajectory Simulation"
 sidebarTitle: "Kinematics Model"
-description: "CSCM's kinematics model vectorially combines a swimmer's intrinsic velocity with tidal current vectors at each time step to compute realistic open-water trajectories."
+description: "How CSCM adds a swimmer velocity vector to the tidal current vector at each time step to compute North Sea open-water crossing trajectories."
 ---
 
 At every simulation time step, CSCM performs a straightforward but physically rigorous operation: the swimmer's intrinsic velocity vector — derived from their current heading and speed — is added component-wise to the environmental current vector at that position and moment. The resulting effective displacement is then applied to advance the swimmer's position by one step. Repeated across hundreds or thousands of steps, this Eulerian integration produces a complete trajectory that accurately captures how a swimmer drifts under the influence of North Sea tidal flows. Because the tidal current can easily match or exceed a swimmer's cruising pace of ~1 m/s, even modest errors in current direction or timing propagate into large positional errors over a 6–40 hour crossing — making per-step vector accuracy the core correctness requirement of the model.
@@ -60,7 +60,7 @@ Abstract base class for anything that can move through an `Environment` over dis
 | Method | Description |
 |---|---|
 | `start(at, environment)` | Resets all internal state; sets starting position; optionally validates environment compatibility. |
-| `move(heading_deg, time_s, environment)` | Executes one time step: calls `calculate_speed()`, retrieves the current vector from the environment, sums them, advances position, and appends to `trajectory` and `guidance`. |
+| `move(heading_deg, time_s, environment)` | Executes one time step: calls `calculate_speed()`, retrieves the current vector from the environment, sums them, advances position, and appends to `trajectory` and `guidance`. Returns `None` — position is tracked via `self.pos` and `self.trajectory`. |
 | `calculate_speed(heading_deg, time_s, environment)` | Combines `calculate_proper_speed_mps()` and `calculate_proper_direction_deviation()` into a single `SpeedVector`. |
 
 **Abstract methods (must be implemented by subclasses):**
@@ -69,6 +69,17 @@ Abstract base class for anything that can move through an `Environment` over dis
 |---|---|---|
 | `calculate_proper_speed_mps(heading_deg, time_s, environment)` | `float` | Intrinsic scalar speed in m/s for this time step, independent of currents. May model fatigue, conditions, etc. |
 | `calculate_proper_direction_deviation(heading_deg, time_s, environment)` | `float` | Deviation in degrees from the commanded heading. Used to model heading jitter or cross-current lean. |
+
+<Note>
+**`calculate_speed()` component formulas:** The method converts `heading_deg` plus the direction deviation to radians and decomposes the intrinsic speed into:
+
+```
+v_east  = proper_speed_mps × cos(proper_direction_rad)
+v_north = proper_speed_mps × sin(proper_direction_rad)
+```
+
+Note that this uses a **trigonometric (math) convention** — `cos` for the East component and `sin` for the North component — rather than the navigation convention used by `SpeedVector.direction_rad`.
+</Note>
 
 ---
 
@@ -185,9 +196,13 @@ Dataclass returned by both `TrajectoryCalculator.calculate_trajectory()` and `Tr
 
 | Field | Type | Description |
 |---|---|---|
-| `trajectory` | `list[(int, Position)]` | Ordered list of `(elapsed_time_s, Position)` pairs from step 0 to `duration_s`. |
+| `trajectory` | `list[(int, Position)]` | Ordered list of `(elapsed_time_s, Position)` pairs from step 0 to `durartion_s`. |
 | `guidance` | `list[(int, float)]` | Ordered list of `(elapsed_time_s, heading_deg)` pairs recording the commanded heading at each step. |
-| `duration_s` | `int` | Total simulation duration in seconds. |
+| `durartion_s` | `int` | Total simulation duration in seconds. |
+
+<Warning>
+The field name is spelled **`durartion_s`** (with the transposed letters `ar`) in the source dataclass definition — this is a known typo in `src/cscm/model.py`. Use this exact spelling when reading the field from a `TrajectoryResult` instance; accessing `result.duration_s` will raise an `AttributeError`.
+</Warning>
 
 ---
 
@@ -230,6 +245,9 @@ calc = TrajectoryCalculator(time_step_s=60)  # 1-minute integration steps
 #
 # for elapsed_s, pos in result.trajectory:
 #     print(f"t+{elapsed_s//60:03d}min  →  {pos}")
+#
+# # Note: access the duration via the correctly-spelled field name:
+# print(f"Total duration: {result.durartion_s}s")
 ```
 
 ---

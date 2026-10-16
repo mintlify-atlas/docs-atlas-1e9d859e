@@ -1,7 +1,7 @@
 ---
-title: "Simulation Engine: Trajectory Prediction for Open-Water Swimmers"
+title: "Simulation Engine: Swim Trajectory Prediction Overview"
 sidebarTitle: "Overview"
-description: "CSCM's simulation engine combines CMEMS current forecasts with swimmer kinematics to predict trajectories, detect optimal start times, and produce GPX tracks and map plots."
+description: "CSCM reads CMEMS current forecasts to predict swimmer drift trajectories, detect tidal peak start times, and export GPX tracks and fishbone overview maps."
 ---
 
 The CSCM simulation engine takes a CMEMS NetCDF forecast file and a [job configuration](/simulation/job-files), then turns them into actionable swim-day intelligence. For each job it reads the U/V current grid, detects **Peak Ebb Current (PEC)** and **Peak Flood Current (PFC)** moments at the chosen start position, and runs a step-by-step vector integration for every candidate start time. For each detected start, the engine writes a GPX track file and composes a daily overview PNG — the *visgraat* (fishbone) map — that shows actual trajectories, the intended-course backbone, and 15-minute current rib vectors laid out perpendicular to the spine. An optional email dispatch step then ships those files to the swimmer's inbox via SMTP.
@@ -14,15 +14,15 @@ The pipeline runs in the following sequence each time a job is executed:
 
 <Steps>
   <Step title="Load CMEMS NetCDF dataset">
-    `xr.open_dataset()` opens the local NetCDF file that was downloaded by the [CMEMS retrieval module](/data/cmems-retrieval). The file covers a date range spanning the simulation window with a tidal-lag-safe margin on both ends. Coordinate names (`latitude`/`lat`, `longitude`/`lon`) are detected automatically.
+    `xr.open_dataset()` opens the local NetCDF file that was downloaded by the [CMEMS retrieval module](/data/cmems-retrieval). The file covers a date range spanning the simulation window with a tidal-lag-safe margin on both ends. Coordinate names (`latitude`/`lat`, `longitude`/`lon`) are detected automatically. The dataset is opened once per job and reused across all simulation dates.
   </Step>
 
   <Step title="find_daily_tide_peaks()">
-    For each simulation date, `find_daily_tide_peaks()` scans the full 24-hour UTC window at the focal start position. It snaps the requested position to the nearest open-water grid cell, computes the Pythagorean current magnitude and the sign of the eastward component `uo` to produce a signed parallel-current time series, then picks local maxima (PFC — flood, eastward-dominant) and local minima (PEC — ebb, westward-dominant) above a 0.1 m/s noise threshold. A 4-hour temporal dead-band filters out spurious duplicate peaks. The result is a chronologically ordered list of `{time, type, velocity_mps}` dicts.
+    For each simulation date, `find_daily_tide_peaks()` scans the full 24-hour UTC window at the focal start position. Before calling this function the runner in `__main__.py` snaps the requested position to the nearest open-water grid cell to avoid land-masked NaN values. Inside the function, values are read directly from the nearest grid cell (no interpolation) — it computes the Pythagorean current magnitude and the sign of the eastward component `uo` to produce a signed parallel-current time series, then picks local maxima (PFC — flood, eastward-dominant) and local minima (PEC — ebb, westward-dominant) above a 0.1 m/s noise threshold. A 4-hour temporal dead-band filters out spurious duplicate peaks. The result is a chronologically ordered list of `{time, type, velocity_mps}` dicts.
   </Step>
 
   <Step title="simulate_test_swim()">
-    For each candidate start time that passes the `in-range` local-time filter, `simulate_test_swim()` integrates the trajectory forward in 60-second steps. At every step the engine calls `CmemsForecastCurrentsModel.get_current_vector()` to fetch the interpolated (U, V) current at the current position and time, vectorially adds the swimmer's intrinsic velocity to get an effective velocity, and converts the result to WGS84 degree offsets using the correct latitude-dependent longitude scaling factor. The result is a `pd.DataFrame` of time-stamped positions and current data.
+    For each candidate start time that passes the `in-range` local-time filter, `simulate_test_swim()` integrates the trajectory forward in 60-second steps. At every step the engine calls `CmemsForecastCurrentsModel.get_current_vector()` to fetch the bilinearly interpolated (U, V) current at the current position and time, vectorially adds the swimmer's intrinsic velocity (hardcoded at **1.0 m/s**) to get an effective velocity, and converts the result to WGS84 degree offsets using the correct latitude-dependent longitude scaling factor. The result is a `pd.DataFrame` of time-stamped positions and current data.
   </Step>
 
   <Step title="plot_daily_simulations()">
@@ -54,7 +54,7 @@ ds = xr.open_dataset("./data/cmems/forecast.nc")
 model = CmemsForecastCurrentsModel(ds)
 ```
 
-The constructor accepts a single `xr.Dataset` argument. It auto-detects whether the coordinate names are `latitude`/`longitude` or `lat`/`lon`.
+The constructor accepts a single `xr.Dataset` argument (`ds`). It auto-detects whether the coordinate names are `latitude`/`longitude` or `lat`/`lon`.
 
 ### get_current_vector()
 
@@ -67,9 +67,9 @@ u, v = model.get_current_vector(position: Position, moment: datetime) -> tuple[f
 | `position` | `Position` | WGS84 lat/lon of the query point                          |
 | `moment`   | `datetime` | UTC timestamp (timezone-aware) of the query               |
 
-**Returns** `(u, v)` — eastward and northward current speed in **m/s**.
+**Returns** `(u_east, v_north)` — eastward and northward current speed in **m/s**.
 
-The method performs tri-linear (lat × lon × time) interpolation using `xr.Dataset.interp()`. It returns `(0.0, 0.0)` in three cases:
+The method performs trilinear (lat × lon × time) interpolation using `xr.Dataset.interp()`. It returns `(0.0, 0.0)` in three cases:
 - The requested `moment` is outside the dataset's temporal extent.
 - The requested position is outside the dataset's spatial bounding box.
 - The interpolated value is `NaN` — which occurs at land cells or near the coastline where the CMEMS grid is masked.
@@ -119,7 +119,7 @@ Returns a `pd.DataFrame` with one row per time step:
 
 ### Integration mechanics
 
-The swimmer's intrinsic speed is fixed at **1.0 m/s** along `heading_deg`. At each time step:
+The swimmer's intrinsic speed is fixed at **1.0 m/s** along `heading_deg` — it is not configurable via a `Swimmer` object. At each time step:
 
 ```
 v_eff_east  = sin(heading_rad) + u_current

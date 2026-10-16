@@ -1,10 +1,10 @@
 ---
-title: "cscm.current API Reference: CMEMS Data and Forecast Models"
+title: "cscm.current — CMEMS Data Retrieval and Current Models"
 sidebarTitle: "cscm.current"
-description: "API reference for CMEMSDataManager, CmemsForecastCurrentsModel, and analysis functions including process_nc_file, calculate_grid_principal_angles, and analyse_grid_cell."
+description: "API reference for CMEMSDataManager, UniformCurrentsModel, and tidal grid analysis: process_nc_file, calculate_grid_principal_angles, classify_grid_cells."
 ---
 
-`cscm.current` contains two sub-packages that together cover the full lifecycle of Copernicus Marine Service (CMEMS) ocean current data. `cscm.current.cmems` handles data retrieval from the CMEMS API and tidal analysis of the downloaded NetCDF files. `cscm.current.current_model` provides `CurrentsModel` implementations: a configurable `UniformCurrentsModel` stub for pipeline testing, and planned classes (`CmemsActualsCurrentModel`, `CmemsAverageCurrentsModel`) for live and climatological CMEMS data feeds.
+`cscm.current` contains two sub-packages that together cover the full lifecycle of Copernicus Marine Service (CMEMS) ocean current data. `cscm.current.cmems` handles data retrieval from the CMEMS API and tidal analysis of the downloaded NetCDF files. `cscm.current.current_model` provides `CurrentsModel` implementations: a configurable `UniformCurrentsModel` stub for pipeline testing, and planned classes (`TriangularCurrentsModel`, `CmemsActualsCurrentModel`, `CmemsAverageCurrentsModel`) for more complete data feeds.
 
 ---
 
@@ -222,7 +222,7 @@ The result is aligned so that the Flood direction (Vloed) has a positive Eastwar
   An `xarray.Dataset` with variables `uo` (eastward current, shape `[time, lat, lon]`) and `vo` (northward current, same shape).
 </ParamField>
 
-**Returns:** `np.ndarray` — 2D array of shape `[n_lat, n_lon]` containing principal flow angles in radians in the range `[0, 2π)`.
+**Returns:** `np.ndarray` — 2D array of shape `(num_lats, num_lons)` containing principal flow angles in radians in the range `[0, 2π)`.
 
 ---
 
@@ -243,8 +243,8 @@ Labels each grid cell as Land, Boundary, or Water based on the time series of `u
 </ParamField>
 
 **Returns:** `tuple[np.ndarray, np.ndarray]`
-- `status_mask` — 2D integer array (`0`=Land, `1`=Boundary, `2`=Water).
-- `is_boundary_mask` — 2D boolean array (`True` where `status_mask == 1`).
+- `status_mask` — 2D integer array of shape `(num_lats, num_lons)` (`0`=Land, `1`=Boundary, `2`=Water).
+- `is_boundary_mask` — 2D boolean array of shape `(num_lats, num_lons)` (`True` where `status_mask == 1`).
 
 ---
 
@@ -374,6 +374,86 @@ Locates exact slack-water moments in a projected current time series using linea
 
 ## cscm.current.current_model
 
+### UniformCurrentsModel
+
+```python
+class UniformCurrentsModel(CurrentsModel):
+    def __init__(
+        self,
+        *,
+        direction_deg: float = 55.0,
+        v_peak_mps: float = 3.4,
+        tide_period_s: int = 6.21 * 60 * 60,
+        lunar_period_s: int = 57 * 6.21 * 60 * 60,
+        lunar_factor: float = 0.8,
+    )
+```
+
+A configurable stub `CurrentsModel` that models a spatially uniform tidal current following a sinusoidal speed envelope modulated by a lunar spring–neap cycle. The design intent is a fixed-direction current whose amplitude oscillates between a spring-tide peak and a reduced neap-tide peak.
+
+**All parameters are keyword-only** (enforced by the `*` in the constructor signature).
+
+<ParamField path="direction_deg" type="float">
+  Compass bearing of the current in degrees (0 = North, 90 = East). Defaults to `55.0°`.
+</ParamField>
+
+<ParamField path="v_peak_mps" type="float">
+  Spring-tide peak current speed in m/s. Defaults to `3.4`.
+</ParamField>
+
+<ParamField path="tide_period_s" type="int">
+  Semi-diurnal tidal period in seconds. Defaults to approximately 6.21 hours (≈ 22 356 s).
+</ParamField>
+
+<ParamField path="lunar_period_s" type="int">
+  Lunar spring–neap cycle duration in seconds. Defaults to `57 × 6.21 hours`.
+</ParamField>
+
+<ParamField path="lunar_factor" type="float">
+  Ratio of neap-tide peak speed to spring-tide peak speed. Defaults to `0.8` (neap peak = 80% of spring peak).
+</ParamField>
+
+<Warning>
+`UniformCurrentsModel` is not yet implemented. The `__init__` body is `...` (a bare ellipsis — no initialisation occurs). `get_current()` constructs `SpeedVector(0, 0)` but does not return it, so it returns `None`. `calibrate_time_phase()` is a pass-through that returns the input unchanged. Use this class only as a structural placeholder for testing the simulation pipeline without a live data feed. See `BCH_UNIFORM` in `cscm.wellknown.CURRENT_MODELS`.
+</Warning>
+
+---
+
+### TriangularCurrentsModel
+
+```python
+class TriangularCurrentsModel(CurrentsModel):
+    pass
+```
+
+Planned future implementation. Intended to model currents directed toward a target point with speed recalibrated based on distance from that point, modulated by a tidal sine envelope and a lunar spring–neap factor. The class body is currently `pass` — it is not usable.
+
+---
+
+### CmemsActualsCurrentModel
+
+```python
+class CmemsActualsCurrentModel(CurrentsModel):
+    pass
+```
+
+Planned future implementation. Intended to load a CMEMS NetCDF file and its pre-calculated analysis metadata to serve actual measured current vectors. Will have a finite temporal range. The class body is currently `pass` — it is not usable.
+
+---
+
+### CmemsAverageCurrentsModel
+
+```python
+class CmemsAverageCurrentsModel(CurrentsModel):
+    pass
+```
+
+Planned future implementation. Intended to serve averaged (climatological) current vectors derived from a CMEMS dataset, without an absolute time reference. The class body is currently `pass` — it is not usable.
+
+---
+
+## cscm.simulation.predict — Live forecast model
+
 ### CmemsForecastCurrentsModel
 
 ```python
@@ -411,48 +491,3 @@ Trilinear interpolation (lat × lon × time) of the CMEMS grid to a precise poin
 </ParamField>
 
 **Returns:** `tuple[float, float]` — `(u_east_mps, v_north_mps)` in m/s.
-
----
-
-### UniformCurrentsModel
-
-```python
-class UniformCurrentsModel(CurrentsModel):
-    def __init__(
-        self,
-        *,
-        direction_deg: float = 55.0,
-        v_peak_mps: float = 3.4,
-        tide_period_s: int = 6.21 * 60 * 60,   # ≈ 22 356 s
-        lunar_period_s: int = 57 * 6.21 * 60 * 60,
-        lunar_factor: float = 0.8,
-    )
-```
-
-A configurable stub `CurrentsModel` that models a spatially uniform tidal current following a sinusoidal speed envelope modulated by a lunar spring–neap cycle. The design intent is a fixed-direction current whose amplitude oscillates between a spring-tide peak and a reduced neap-tide peak.
-
-**All parameters are keyword-only.**
-
-<ParamField path="direction_deg" type="float">
-  Compass bearing of the current in degrees (0 = North, 90 = East). Defaults to `55.0°`.
-</ParamField>
-
-<ParamField path="v_peak_mps" type="float">
-  Spring-tide peak current speed in m/s. Defaults to `3.4`.
-</ParamField>
-
-<ParamField path="tide_period_s" type="int">
-  Semi-diurnal tidal period in seconds. Defaults to approximately 6.21 hours (22 356 s).
-</ParamField>
-
-<ParamField path="lunar_period_s" type="int">
-  Lunar spring–neap cycle duration in seconds. Defaults to 57 × 6.21 hours.
-</ParamField>
-
-<ParamField path="lunar_factor" type="float">
-  Ratio of neap-tide peak speed to spring-tide peak speed. Defaults to `0.8` (neap peak = 80% of spring peak).
-</ParamField>
-
-<Warning>
-`UniformCurrentsModel` is not yet implemented. `get_current()` currently returns a zero `SpeedVector` and `calibrate_time_phase()` is a pass-through. It is available as a structural placeholder for testing the simulation pipeline without a CMEMS data feed. See `BCH_UNIFORM` in `cscm.wellknown.CURRENT_MODELS`.
-</Warning>

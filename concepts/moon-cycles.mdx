@@ -1,7 +1,7 @@
 ---
-title: "Moon Cycles and Tidal Period Calculations"
+title: "Moon Cycles and Semi-Diurnal Tidal Period Derivation"
 sidebarTitle: "Moon Cycles"
-description: "CSCM uses NASA JPL ephemeris data via skyfield to compute synodic months and semi-diurnal tidal periods, which partition CMEMS data downloads by lunar cycle."
+description: "CSCM uses NASA JPL DE421 ephemeris via skyfield to compute synodic months and derive semi-diurnal tidal periods used to partition CMEMS downloads."
 ---
 
 The amplitude of tidal currents in the North Sea varies significantly over the ~29.5-day synodic month. During Spring tides (near New Moon and Full Moon) peak current speeds can be double those observed during Neap tides (near the quarter phases). For the PCA tidal analysis in CSCM to produce scientifically meaningful Spring/Neap peak comparisons, each CMEMS NetCDF download must contain **one complete Spring-Neap cycle** — neither truncated partway through a Spring tide nor spanning two different lunar cycles that would mix their amplitude envelopes. CSCM therefore partitions all data downloads by **new-moon cycle**: each file runs from one New Moon to the next, with asymmetric margins applied around the boundaries to accommodate tidal lag effects. The boundaries between cycles are computed with high-precision astronomical ephemeris data rather than a fixed 29.5-day approximation, because the actual synodic month varies by up to ±14 hours depending on lunar orbital eccentricity.
@@ -26,7 +26,7 @@ Returns a list of all major lunar phase events between `t0` and `t1`.
 
 Each element of the returned list is a tuple:
 
-```
+```python
 (datetime_utc, phase_index, phase_name, angle_deg)
 ```
 

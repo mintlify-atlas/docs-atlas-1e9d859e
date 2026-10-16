@@ -1,5 +1,5 @@
 ---
-title: "Run CSCM Swim Simulations from the Command Line"
+title: "Run CSCM Trajectory Simulations from the Command Line"
 sidebarTitle: "Running Simulations"
 description: "Use the cscm.simulation CLI module to execute trajectory predictions, optionally skipping CMEMS data updates for faster iteration during development."
 ---
@@ -25,7 +25,7 @@ poetry run python -m cscm.simulation --skip-update
 | `--skip-update` | Skip the Copernicus CMEMS data download step. Useful during development when the local NetCDF file is already current. |
 | `--job-dir PATH` | Override the job file directory (default: `./data/simulation/jobs`). |
 | `--data-dir PATH` | Override the CMEMS forecast storage directory (default: `./data/cmems`). |
-| `--output-dir PATH` | Override the default output directory for results (default: `./data_store/predictions`). |
+| `--output-dir PATH` | Override the default fallback output directory (default: `./data_store/predictions`). Per-job output paths defined in each job file's `results.folder` field take precedence over this value. |
 | `--cron-install` | Generate a ready-to-install `/etc/cron.daily/` shell script and print installation instructions, then exit. |
 
 ---
@@ -57,18 +57,20 @@ poetry run python -m cscm.simulation --skip-update
     `parse_date_range_expr()` converts the `date.range` expression (e.g. `0d, 1d, 2d`) into a sorted, deduplicated list of `datetime` objects relative to the moment the script was run. Each date in the list receives its own independent set of trajectory calculations.
   </Step>
 
+  <Step title="Open dataset and classify grid">
+    The CMEMS NetCDF dataset is opened once per job with `xr.open_dataset()`. `classify_grid_cells()` classifies every grid cell as Land (0), Boundary (1), or Water (2). This classification is reused for all simulation dates within the same job run.
+  </Step>
+
   <Step title="Tide peak detection">
-    For each simulation date:
+    For each simulation date and each `calc` entry:
     1. The 24-hour UTC window is defined as `00:00:00–23:59:59` for that date.
-    2. `xr.open_dataset()` loads the selected NetCDF file.
-    3. `classify_grid_cells()` classifies every grid cell as Land (0), Boundary (1), or Water (2).
-    4. The `calc[].from` position is snapped to the nearest open-water (status 2) grid cell.
-    5. `find_daily_tide_peaks()` is called with that snapped position and the 24-hour window, returning a list of `{time, type, velocity_mps}` dicts.
-    6. Peaks are filtered to the `calc[].time.detect.types` list (`pec`, `pfc`, or both) and to the `in-range` local-time window defined in `tz`.
+    2. The `calc[].from` position is snapped to the nearest open-water (status 2) grid cell.
+    3. `find_daily_tide_peaks()` is called with the snapped position and the 24-hour window. It reads current data directly from the nearest grid cell (no interpolation) and returns a list of `{time, type, velocity_mps}` dicts.
+    4. Peaks are filtered to the `calc[].time.detect.types` list (`pec`, `pfc`, or both) and to the `in-range` local-time window defined in `tz`.
   </Step>
 
   <Step title="Trajectory simulation">
-    For each peak that passes all filters, `simulate_test_swim()` is called with the original (un-snapped) `calc[].from` position as the start, the detected UTC peak time, the configured `bearing` and `duration`. The function returns a `pd.DataFrame` trajectory logged at 60-second intervals.
+    For each peak that passes all filters, `simulate_test_swim()` is called with the original (un-snapped) `calc[].from` position as the start, the detected UTC peak time, and the configured `bearing` and `duration`. Swimmer speed is fixed at 1.0 m/s. The function returns a `pd.DataFrame` trajectory logged at 60-second intervals.
   </Step>
 
   <Step title="GPX export">

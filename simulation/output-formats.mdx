@@ -58,10 +58,22 @@ results:
     gpx: ./{date}-{calc.id}.gpx
 ```
 
-With a `calc.id` of `{date}-myname-{time}-pec`, a simulation date of `2027-10-07`, and a detected start time of `06:42` local (CEST), the resolved filename would be:
+The `{calc.id}` token is expanded first using the simulation date and detected local start time. With a `calc.id` of `{date}-myname-{time}-pec`, a simulation date of `2027-10-07`, and a detected local start time of `06:42` (CEST), the resolved filename is:
 
 ```
 2027-10-07-2027-10-07-myname-0642-pec.gpx
+```
+
+If you want a shorter filename, use a static prefix in `calc[].id` rather than `{date}` again:
+
+```yaml
+calc:
+  - id: "myname-{time}-pec"
+
+results:
+  files:
+    gpx: ./{date}-{calc.id}.gpx
+    # Resolves to: ./2027-10-07-myname-0642-pec.gpx
 ```
 
 ### Importing GPX files
@@ -91,6 +103,7 @@ plot_daily_simulations(
     lats=lats,
     lons=lons,
     model=model,
+    mussel_farm_wkt=None,                                        # unused; reserved
     coastline_wkt_path=Path("./data/simulation/coastline.wkt.csv"),
     obstructions_wkt_path=Path("./data/simulation/obstructions.wkt.csv"),
     colors_cfg=colors_cfg,    # JobColorsConfig or None
@@ -98,7 +111,9 @@ plot_daily_simulations(
 )
 ```
 
-The function renders a **11 × 10 inch** matplotlib figure at 150 DPI and saves it as a PNG. The map auto-zooms to a bounding box that tightly fits all trajectory endpoints, with a ~1500 m (≈ 0.0135 °) outset buffer on all sides.
+All parameters with defaults are optional. `mussel_farm_wkt` appears in the function signature but is not currently used in the rendering logic; pass `None` or omit it.
+
+The function renders an **11 × 10 inch** matplotlib figure at 150 DPI and saves it as a PNG. The map auto-zooms to a bounding box that tightly fits all trajectory endpoints plus the projected backbone endpoints, with a ~1500 m (≈ 0.0135 °) outset buffer on all sides.
 
 ### Map layers (bottom to top)
 
@@ -149,6 +164,7 @@ Labels on the map are controlled by the `results.labels` block in the job file:
 | `totaldistance` | `21.6 km` | Straight-line distance at 1.0 m/s for the full duration |
 | `speed` | `1.0 m/s` | Nominal swimmer speed |
 | `type` | `PEC (Ebb)` | Tide type label |
+| `ribdistance` | `15 min` | Rib interval label |
 
 ---
 
@@ -172,8 +188,8 @@ The HTML template at `results.mail.template` is rendered with Jinja2. The follow
 | `date` | `str` | Simulation date formatted as `DD-MM-YYYY` |
 | `now` | `str` | Script run timestamp in `YYYY-MM-DD HH:MM` (local timezone) |
 | `tz_name` | `str` | Timezone abbreviation (e.g. `CEST`, `CET`) |
-| `qotd_text` | `str` or `None` | Quote text from `qotd.yml`, randomly selected |
-| `qotd_author` | `str` or `None` | Author of the selected quote |
+| `qotd_text` | `str` or `None` | Quote text from `qotd.yml`, randomly selected (`txt` field) |
+| `qotd_author` | `str` or `None` | Author of the selected quote (`by` field from `qotd.yml`) |
 | `calculations` | `list[dict]` | List of simulation summaries (see below) |
 | `forecast_notice` | `str` or `None` | Warning text if CMEMS live update failed |
 
@@ -220,17 +236,17 @@ All output path templates in the `results` block support the following substitut
 |-------|---------------|---------|
 | `{date}` | Simulation date in `YYYY-MM-DD` | `2027-10-07` |
 | `{now}` | Script run timestamp as `YYYYMMDD_HHMMSS` | `20271006_031500` |
-| `{calc.id}` | The resolved `calc[].id` value (after its own `{date}` and `{time}` tokens are expanded) | `2027-10-07-myname-0642-pec` |
+| `{calc.id}` | The resolved `calc[].id` value (after its own `{date}` and `{time}` tokens are expanded) | `myname-0642-pec` |
 | `{time}` | Detected start time in `HHMM` format (used *inside* `calc[].id`) | `0642` |
 
 Tokens inside `calc[].id` are expanded first using the simulation date and detected local start time, and the resulting string is then available as `{calc.id}` in the file path templates:
 
 ```yaml
 calc:
-  - id: "{date}-myname-{time}-pec"
+  - id: "myname-{time}-pec"
 
 results:
   files:
     gpx: ./{date}-{calc.id}.gpx
-    # Resolves to: ./2027-10-07-2027-10-07-myname-0642-pec.gpx
+    # Resolves to: ./2027-10-07-myname-0642-pec.gpx
 ```

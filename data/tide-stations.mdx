@@ -1,7 +1,7 @@
 ---
 title: "Belgian Coastal Tide Stations: HIC and MDK APIs"
 sidebarTitle: "Tide Stations"
-description: "CSCM provides HicClient and MdkClient to query water level forecasts, astronomical tidal curves, and HW/LW extremes from Belgian coastal monitoring networks."
+description: "CSCM provides HicClient and MdkClient to query water level forecasts, astronomical tidal curves, and HW/LW extremes for Belgian coastal stations."
 ---
 
 CSCM integrates with two Belgian coastal data sources to provide water level forecasts and observed tidal data that complement the CMEMS current fields: the **Flemish Hydro Information Centre (HIC)** KiWIS API (accessed via the `pywaterinfo` library) and the **Meetnet Vlaamse Banken (MDK)** REST API v2. Both services publish water level time series and tidal extremes for stations along the Belgian coast — Nieuwpoort, Oostende, Blankenberge, and Zeebrugge — enabling CSCM to cross-validate its CMEMS-derived current model against independent tide-gauge observations and operational surge forecasts.
@@ -249,7 +249,7 @@ print(client.ping())
 ## Station summary
 
 <CardGroup cols={2}>
-  <Card title="HIC — 3 Stations" icon="water">
+  <Card title="HIC — 3 Stations" icon="water" href="/data/tide-stations#hicclient">
     Flemish Hydro Information Centre KiWIS API via `pywaterinfo`.
     Provides 5-minute operational surge+tide forecasts, astronomical curves, and HW/LW extremes.
 
@@ -261,7 +261,7 @@ print(client.ping())
 
     Synonyms: `OHM` → `OST`, `ZB` → `ZLD`
   </Card>
-  <Card title="MDK — 6 Stations" icon="chart-line">
+  <Card title="MDK — 6 Stations" icon="chart-line" href="/data/tide-stations#mdkclient">
     Meetnet Vlaamse Banken REST API v2.
     Provides raw sensor time series (cm TAW, 5-min) for coastal and offshore monitoring platforms.
 
